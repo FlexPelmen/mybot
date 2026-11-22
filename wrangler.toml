@@ -6,6 +6,3 @@ compatibility_date = "2026-11-01"
 binding = "DB"
 database_name = "mybot-catalog"
 database_id = "3e961ef6-5418-4029-aafd-e1a5d24c9b4d"
-
-[vars]
-ADMIN_IDS = "5171403469"
