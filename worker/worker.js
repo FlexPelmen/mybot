@@ -230,14 +230,15 @@ async function verifyInitData(initData, botToken) {
   const hmacKey = (keyData) =>
     crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 
-  const secret = await crypto.subtle.sign("HMAC", await hmacKey(enc.encode("WebAppData")), enc.encode(botToken));
+  const secret = await crypto.subtle.sign("HMAC", await hmacKey(enc.encode(botToken)), enc.encode("WebAppData"));
   const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), enc.encode(dataCheckString));
   const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
   if (!safeEqual(hex, hash)) return null;
 
   const authDate = Number(params.get("auth_date"));
-  if (!authDate || Date.now() / 1000 - authDate > 86400) return null;
+  const now = Date.now() / 1000;
+  if (!Number.isFinite(authDate) || authDate > now + 60 || now - authDate > 86400) return null;
 
   try {
     return JSON.parse(params.get("user"));
