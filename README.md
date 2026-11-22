@@ -1,14 +1,17 @@
-# mybot — Telegram Mini App
+# mybot — каталог Minecraft (Telegram Mini App)
 
-Стартовый шаблон Telegram Mini App (чистый HTML/CSS/JS, без сборки).
+Разделы: ресурс паки, конфиги, шейдеры. Админ-панель встроена в приложение и видна только админам.
 
-## Запуск
+## Состав
+- `index.html` — приложение (GitHub Pages: `https://flexpelmen.github.io/mybot/`).
+- `worker/worker.js` — серверная часть (Cloudflare Worker + база D1).
 
-1. В настройках репозитория: **Settings → Pages → Source: Deploy from branch → `main` / `(root)`**.
-2. Адрес приложения: `https://flexpelmen.github.io/mybot/`.
-3. В @BotFather привяжи этот адрес к боту как Mini App или кнопку меню.
+## Настройка приложения
+В начале скрипта `index.html`:
+- `API_URL` — адрес воркера (`https://….workers.dev`).
+- `CONTACT` — username в Telegram для кнопки «Купить» (без `@`).
 
-## Важно
-
-- Токен бота нельзя хранить в репозитории. Он нужен только серверной части бота.
-- `initDataUnsafe` на клиенте можно подделать. Для проверки пользователя на сервере используй `initData`.
+## Настройка воркера (Cloudflare)
+- Привязка базы D1 с именем `DB`.
+- `BOT_TOKEN` — токен бота (секрет). В репозиторий не добавлять.
+- `ADMIN_IDS` — Telegram ID админов через запятую.
