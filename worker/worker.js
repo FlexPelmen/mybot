@@ -32,8 +32,27 @@ async function route(request, env, cors) {
   const method = request.method;
 
   if (path === "/" || path === "/api/health") {
-    try { await ensureTelegramBot(env); } catch (err) { console.error("bot_setup_failed", err); }
-    return json({ ok: true, bot_ready: telegramBotConfigured }, 200, cors);
+    let bot = { configured: false };
+    try {
+      await ensureTelegramBot(env);
+      const [webhook, me] = await Promise.all([
+        telegramCall(env, "getWebhookInfo"),
+        telegramCall(env, "getMe")
+      ]);
+      bot = {
+        configured: telegramBotConfigured,
+        username: me.username || "",
+        webhook_url: webhook.url || "",
+        pending_updates: webhook.pending_update_count || 0,
+        last_error_date: webhook.last_error_date || null,
+        last_error_message: webhook.last_error_message || null,
+        allowed_updates: webhook.allowed_updates || []
+      };
+    } catch (err) {
+      console.error("bot_diagnostics_failed", err);
+      bot.error = String(err?.message || "telegram_api_error");
+    }
+    return json({ ok: true, bot_ready: telegramBotConfigured, bot }, 200, cors);
   }
 
   // Telegram bot webhook
