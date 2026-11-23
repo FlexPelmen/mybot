@@ -35,16 +35,36 @@ async function route(request, env, cors) {
     return json({ ok: true }, 200, cors);
   }
 
-  // Кто сейчас пользуется приложением
+  // Telegram bot webhook
+  if (path === "/telegram/webhook" && method === "POST") {
+    const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (!env.TELEGRAM_WEBHOOK_SECRET || !safeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
+      return json({ error: "webhook_forbidden" }, 403, cors);
+    }
+    const update = await readJson(request);
+    await handleTelegramUpdate(update, env);
+    return json({ ok: true }, 200, cors);
+  }
+
+  // Telegram Mini App authentication and access gate
   const { user, why } = await getAuth(request, env);
   const listed = !!user && isAdminId(user.id, env);
-  // Временный открытый режим: пока не наступит время OPEN_ADMIN_UNTIL (unix, секунды), админ — любой
-  const open = Date.now() / 1000 < Number(env.OPEN_ADMIN_UNTIL || 0);
-  const isAdmin = open || listed;
+  const isAdmin = listed;
 
   if (path === "/api/me" && method === "GET") {
-    return json({ admin: isAdmin, open, why: listed ? "ok" : why === "ok" ? "not_in_admin_list" : why }, 200, cors);
+    if (!user) return json({ authenticated: false, subscribed: false, admin: false, why }, 200, cors);
+    const subscribed = await isSubscribed(user.id, env);
+    if (!subscribed) return json({ authenticated: true, subscribed: false, admin: isAdmin, channel: "https://t.me/mineline_telegram" }, 200, cors);
+    await saveUser(user, env);
+    const profile = await getProfile(user.id, env);
+    const botUsername = await getBotUsername(env);
+    return json({ authenticated: true, subscribed: true, admin: isAdmin, user: profile, bot_username: botUsername }, 200, cors);
   }
+
+  if (!user) return json({ error: "auth_required" }, 401, cors);
+  const subscribed = await isSubscribed(user.id, env);
+  if (!subscribed) return json({ error: "subscription_required", channel: "https://t.me/mineline_telegram" }, 403, cors);
+  await saveUser(user, env);
 
   if (path === "/api/items" && method === "GET") {
     const rows = await env.DB.prepare(
@@ -99,9 +119,19 @@ async function route(request, env, cors) {
     return json({ ok: true }, 200, cors);
   }
 
-  // ---------- Только для админа ----------
+  // ---------- Только для админа + дополнительный код ----------
   if (path.startsWith("/api/admin/")) {
     if (!isAdmin) return json({ error: "forbidden" }, 403, cors);
+    if (path === "/api/admin/unlock" && method === "POST") {
+      const body = await readJson(request);
+      if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
+      if (!safeEqual(String(body?.code || ""), String(env.ADMIN_CODE))) return json({ error: "bad_admin_code" }, 403, cors);
+      return json({ ok: true }, 200, cors);
+    }
+    if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
+    if (!safeEqual(request.headers.get("X-Admin-Code") || "", String(env.ADMIN_CODE))) {
+      return json({ error: "admin_code_required" }, 403, cors);
+    }
 
     if (path === "/api/admin/items" && method === "POST") {
       const body = await readJson(request);
@@ -267,6 +297,12 @@ async function ensureSchema(env) {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL DEFAULT 0, link TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0, downloads INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
   ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', photo_url TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrals INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id TEXT NOT NULL, referred_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL DEFAULT 0)"
+  ).run();
   schemaReady = true;
 }
 
@@ -287,4 +323,157 @@ function json(data, status, cors) {
     status,
     headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
+}
+
+
+// ---------- Referral, profile, channel membership and Telegram bot ----------
+const REQUIRED_CHANNEL = "@mineline_telegram";
+const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
+
+async function telegramCall(env, method, payload = {}) {
+  if (!env.BOT_TOKEN) throw new Error("bot_token_missing");
+  const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error(data.description || "telegram_api_error");
+  return data.result;
+}
+
+async function isSubscribed(userId, env) {
+  try {
+    const member = await telegramCall(env, "getChatMember", { chat_id: REQUIRED_CHANNEL, user_id: Number(userId) });
+    return member.status === "creator" || member.status === "administrator" || member.status === "member" ||
+      (member.status === "restricted" && member.is_member === true);
+  } catch (err) {
+    console.error("membership_check_failed", err);
+    return false;
+  }
+}
+
+async function saveUser(user, env) {
+  const id = String(user.id);
+  await env.DB.prepare(
+    "INSERT INTO users (telegram_id, username, first_name, photo_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name, photo_url = excluded.photo_url, updated_at = excluded.updated_at"
+  ).bind(id, String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), Math.floor(Date.now()/1000), Math.floor(Date.now()/1000)).run();
+}
+
+async function getProfile(userId, env) {
+  const row = await env.DB.prepare(
+    "SELECT telegram_id, username, first_name, photo_url, balance, referrals FROM users WHERE telegram_id = ?"
+  ).bind(String(userId)).first();
+  return row ? {
+    id: row.telegram_id, username: row.username, first_name: row.first_name,
+    photo_url: row.photo_url, balance: row.balance, referrals: row.referrals,
+  } : { id: String(userId), balance: 0, referrals: 0 };
+}
+
+async function creditReferral(referrerId, referredId, env) {
+  const referrer = String(referrerId || "");
+  const referred = String(referredId || "");
+  if (!/^\\d+$/.test(referrer) || !/^\\d+$/.test(referred) || referrer === referred) return false;
+  const exists = await env.DB.prepare("SELECT telegram_id FROM users WHERE telegram_id = ?").bind(referrer).first();
+  if (!exists) return false;
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)"
+  ).bind(referrer, referred, Math.floor(Date.now()/1000)).run();
+  if (result.meta && result.meta.changes > 0) {
+    await env.DB.prepare("UPDATE users SET balance = balance + 2, referrals = referrals + 1, updated_at = ? WHERE telegram_id = ?")
+      .bind(Math.floor(Date.now()/1000), referrer).run();
+    return true;
+  }
+  return false;
+}
+
+async function getBotUsername(env) {
+  try {
+    const me = await telegramCall(env, "getMe");
+    return me.username || "";
+  } catch { return ""; }
+}
+
+async function sendBotMessage(env, chatId, text, replyMarkup) {
+  return telegramCall(env, "sendMessage", {
+    chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
+}
+
+function joinKeyboard(referrerId = "") {
+  return {
+    inline_keyboard: [
+      [{ text: "📢 Подписаться на канал", url: "https://t.me/mineline_telegram" }],
+      [{ text: "✅ Проверить подписку", callback_data: "check_sub:" + (referrerId || "0") }],
+    ],
+  };
+}
+
+async function sendBotHome(env, chatId, user) {
+  await saveUser(user, env);
+  const profile = await getProfile(user.id, env);
+  const username = await getBotUsername(env);
+  const referral = username ? `https://t.me/${username}?start=ref_${user.id}` : "Ссылка появится после настройки бота";
+  const name = escapeHtml(user.first_name || "Пользователь");
+  const text = `👤 <b>Твой профиль</b>\n\nПривет, ${name}!\n\n⭐ Баланс: <b>${profile.balance}</b>\n👥 Приглашено: <b>${profile.referrals}</b>\n\nЗа каждого нового приглашённого пользователя начисляется <b>+2 внутренние звезды</b>. Их нельзя вывести или обменять на деньги.\n\n🔗 Твоя ссылка:\n<code>${escapeHtml(referral)}</code>`;
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: "🚀 Открыть Mini App", web_app: { url: MINI_APP_URL } }],
+      [{ text: "👤 Обновить профиль", callback_data: "profile" }],
+    ],
+  };
+  await sendBotMessage(env, chatId, text, keyboard);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+async function handleTelegramUpdate(update, env) {
+  if (update?.callback_query) {
+    const q = update.callback_query;
+    const user = q.from;
+    if (String(q.data || "").startsWith("check_sub:")) {
+      const referrerId = String(q.data.split(":")[1] || "0");
+      const ok = await isSubscribed(user.id, env);
+      await telegramCall(env, "answerCallbackQuery", {
+        callback_query_id: q.id,
+        text: ok ? "Подписка подтверждена!" : "Сначала подпишись на канал.",
+        show_alert: !ok,
+      });
+      if (ok) {
+        await saveUser(user, env);
+        if (referrerId !== "0") await creditReferral(referrerId, user.id, env);
+        await sendBotHome(env, q.message.chat.id, user);
+      }
+    } else if (q.data === "profile") {
+      await telegramCall(env, "answerCallbackQuery", { callback_query_id: q.id });
+      if (await isSubscribed(user.id, env)) await sendBotHome(env, q.message.chat.id, user);
+      else await sendBotMessage(env, q.message.chat.id, "Чтобы пользоваться ботом, подпишись на канал:", joinKeyboard());
+    }
+    return;
+  }
+
+  const msg = update?.message;
+  if (!msg?.from || !msg.chat) return;
+  const user = msg.from;
+  const text = String(msg.text || "").trim();
+  const match = text.match(/^\\/start(?:\\s+ref_(\\d+))?/);
+  const referrerId = match?.[1] || "";
+  if (!(await isSubscribed(user.id, env))) {
+    await sendBotMessage(env, msg.chat.id,
+      "🔒 <b>Доступ закрыт</b>\n\nЧтобы пользоваться ботом и каталогом, подпишись на наш канал, затем нажми «Проверить подписку».",
+      joinKeyboard(referrerId));
+    return;
+  }
+  await saveUser(user, env);
+  if (referrerId) await creditReferral(referrerId, user.id, env);
+  if (/^\\/(start|profile)(?:\\s|$)/.test(text) || text === "👤 Профиль") {
+    await sendBotHome(env, msg.chat.id, user);
+  } else {
+    await sendBotMessage(env, msg.chat.id, "Выбери действие:", {
+      inline_keyboard: [[{ text: "🚀 Открыть Mini App", web_app: { url: MINI_APP_URL } }], [{ text: "👤 Профиль", callback_data: "profile" }]],
+    });
+  }
 }
