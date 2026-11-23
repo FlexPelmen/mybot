@@ -32,6 +32,7 @@ async function route(request, env, cors) {
   const method = request.method;
 
   if (path === "/" || path === "/api/health") {
+    try { await ensureTelegramBot(env); } catch (err) { console.error("bot_setup_failed", err); }
     return json({ ok: true }, 200, cors);
   }
 
@@ -339,6 +340,35 @@ function json(data, status, cors) {
 // ---------- Referral, profile, channel membership and Telegram bot ----------
 const REQUIRED_CHANNEL = "@mineline_telegram";
 const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
+
+let telegramBotConfigured = false;
+
+async function ensureTelegramBot(env) {
+  if (telegramBotConfigured || !env.BOT_TOKEN) return;
+  const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
+  const info = await telegramCall(env, "getWebhookInfo");
+  if (info.url !== webhookUrl) {
+    await telegramCall(env, "setWebhook", {
+      url: webhookUrl,
+      secret_token: await deriveWebhookSecret(env),
+      allowed_updates: ["message", "callback_query"]
+    });
+  }
+  await telegramCall(env, "setMyCommands", {
+    commands: [
+      { command: "start", description: "Открыть MineLine" },
+      { command: "profile", description: "Мой профиль и баланс" }
+    ]
+  });
+  await telegramCall(env, "setChatMenuButton", {
+    menu_button: {
+      type: "web_app",
+      text: "Открыть каталог",
+      web_app: { url: MINI_APP_URL }
+    }
+  });
+  telegramBotConfigured = true;
+}
 
 async function deriveWebhookSecret(env) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.BOT_TOKEN || ""));
