@@ -355,9 +355,14 @@ async function isSubscribed(userId, env) {
 
 async function saveUser(user, env) {
   const id = String(user.id);
+  const now = Math.floor(Date.now()/1000);
+  const inserted = await env.DB.prepare(
+    "INSERT OR IGNORE INTO users (telegram_id, username, first_name, photo_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).bind(id, String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), now, now).run();
   await env.DB.prepare(
-    "INSERT INTO users (telegram_id, username, first_name, photo_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name, photo_url = excluded.photo_url, updated_at = excluded.updated_at"
-  ).bind(id, String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), Math.floor(Date.now()/1000), Math.floor(Date.now()/1000)).run();
+    "UPDATE users SET username = ?, first_name = ?, photo_url = ?, updated_at = ? WHERE telegram_id = ?"
+  ).bind(String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), now, id).run();
+  return !!(inserted.meta && inserted.meta.changes > 0);
 }
 
 async function getProfile(userId, env) {
@@ -373,7 +378,7 @@ async function getProfile(userId, env) {
 async function creditReferral(referrerId, referredId, env) {
   const referrer = String(referrerId || "");
   const referred = String(referredId || "");
-  if (!/^\\d+$/.test(referrer) || !/^\\d+$/.test(referred) || referrer === referred) return false;
+  if (!/^\d+$/.test(referrer) || !/^\d+$/.test(referred) || referrer === referred) return false;
   const exists = await env.DB.prepare("SELECT telegram_id FROM users WHERE telegram_id = ?").bind(referrer).first();
   if (!exists) return false;
   const result = await env.DB.prepare(
@@ -443,8 +448,8 @@ async function handleTelegramUpdate(update, env) {
         show_alert: !ok,
       });
       if (ok) {
-        await saveUser(user, env);
-        if (referrerId !== "0") await creditReferral(referrerId, user.id, env);
+        const isNewUser = await saveUser(user, env);
+        if (isNewUser && referrerId !== "0") await creditReferral(referrerId, user.id, env);
         await sendBotHome(env, q.message.chat.id, user);
       }
     } else if (q.data === "profile") {
@@ -459,7 +464,7 @@ async function handleTelegramUpdate(update, env) {
   if (!msg?.from || !msg.chat) return;
   const user = msg.from;
   const text = String(msg.text || "").trim();
-  const match = text.match(/^\\/start(?:\\s+ref_(\\d+))?/);
+  const match = text.match(/^\/start(?:\s+ref_(\d+))?/);
   const referrerId = match?.[1] || "";
   if (!(await isSubscribed(user.id, env))) {
     await sendBotMessage(env, msg.chat.id,
@@ -467,9 +472,9 @@ async function handleTelegramUpdate(update, env) {
       joinKeyboard(referrerId));
     return;
   }
-  await saveUser(user, env);
-  if (referrerId) await creditReferral(referrerId, user.id, env);
-  if (/^\\/(start|profile)(?:\\s|$)/.test(text) || text === "👤 Профиль") {
+  const isNewUser = await saveUser(user, env);
+  if (isNewUser && referrerId) await creditReferral(referrerId, user.id, env);
+  if (/^\/(start|profile)(?:\s|$)/.test(text) || text === "👤 Профиль") {
     await sendBotHome(env, msg.chat.id, user);
   } else {
     await sendBotMessage(env, msg.chat.id, "Выбери действие:", {
