@@ -61,10 +61,11 @@ async function route(request, env, cors) {
     return json({ authenticated: true, subscribed: true, admin: isAdmin, user: profile, bot_username: botUsername }, 200, cors);
   }
 
-  if (!user) return json({ error: "auth_required" }, 401, cors);
-  const subscribed = await isSubscribed(user.id, env);
+  const isImageRequest = /^\/api\/img\/\d+$/.test(path);
+  if (!user && !isImageRequest) return json({ error: "auth_required" }, 401, cors);
+  const subscribed = user ? await isSubscribed(user.id, env) : true;
   if (!subscribed) return json({ error: "subscription_required", channel: "https://t.me/mineline_telegram" }, 403, cors);
-  await saveUser(user, env);
+  if (user) await saveUser(user, env);
 
   if (path === "/api/items" && method === "GET") {
     const rows = await env.DB.prepare(
