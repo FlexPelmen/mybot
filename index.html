@@ -542,7 +542,7 @@
 
     function openAdminGate() {
       if (state.adminCode) { openEditor(null); return; }
-      const code = h("input", { type: "text", autocomplete: "off", placeholder: "Введите админ-код" });
+      const code = h("input", { type: "password", autocomplete: "off", placeholder: "Введите админ-код" });
       const submit = h("button", { class: "btn" }, "Подтвердить");
       submit.addEventListener("click", async () => {
         submit.disabled = true;
