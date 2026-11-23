@@ -346,14 +346,13 @@ let telegramBotConfigured = false;
 async function ensureTelegramBot(env) {
   if (telegramBotConfigured || !env.BOT_TOKEN) return;
   const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
-  const info = await telegramCall(env, "getWebhookInfo");
-  if (info.url !== webhookUrl) {
-    await telegramCall(env, "setWebhook", {
-      url: webhookUrl,
-      secret_token: await deriveWebhookSecret(env),
-      allowed_updates: ["message", "callback_query"]
-    });
-  }
+  // Always re-apply the expected secret token as getWebhookInfo never returns it.
+  // This repairs stale webhook configuration even when the URL is already correct.
+  await telegramCall(env, "setWebhook", {
+    url: webhookUrl,
+    secret_token: await deriveWebhookSecret(env),
+    allowed_updates: ["message", "callback_query"]
+  });
   await telegramCall(env, "setMyCommands", {
     commands: [
       { command: "start", description: "Открыть MineLine" },
