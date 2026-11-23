@@ -98,6 +98,32 @@
     .check { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
     .check input { width: 20px; height: 20px; }
     .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); z-index: 40; background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: 85%; text-align: center; }
+    body { background: radial-gradient(ellipse at 10% 0%, rgba(90,75,210,.20), transparent 42%), var(--bg); }
+    header { padding: 22px 16px 10px; }
+    h1 { font-size: 28px; font-weight: 850; letter-spacing: -.8px; }
+    .profile { margin: 10px 14px 14px; padding: 17px; border-radius: 22px; color: #fff; background: linear-gradient(125deg,#22265d 0%,#5141a5 55%,#8b4ac4 100%); box-shadow: 0 12px 30px rgba(49,39,120,.25); overflow: hidden; position: relative; }
+    .profile:after { content:""; position:absolute; width:170px; height:170px; border-radius:50%; right:-58px; top:-82px; background:rgba(255,255,255,.09); }
+    .profile-top { display:flex; align-items:center; gap:12px; position:relative; z-index:1; }
+    .avatar { width:48px; height:48px; border-radius:50%; object-fit:cover; background:rgba(255,255,255,.18); border:2px solid rgba(255,255,255,.5); }
+    .avatar-fallback { width:48px; height:48px; border-radius:50%; display:grid; place-items:center; background:rgba(255,255,255,.18); font-size:23px; }
+    .profile-name { font-size:17px; font-weight:800; }
+    .profile-caption { color:rgba(255,255,255,.72); font-size:12px; }
+    .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:17px; position:relative; z-index:1; }
+    .stat { padding:12px; border-radius:15px; background:rgba(255,255,255,.13); border:1px solid rgba(255,255,255,.12); }
+    .stat-value { font-size:23px; font-weight:850; line-height:1.15; }
+    .stat-label { margin-top:4px; color:rgba(255,255,255,.72); font-size:12px; }
+    .referral { display:flex; align-items:center; gap:8px; margin-top:12px; position:relative; z-index:1; }
+    .referral-link { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:10px 11px; border-radius:12px; background:rgba(0,0,0,.17); font-size:12px; }
+    .copy-btn { border:0; border-radius:12px; padding:10px 12px; background:#fff; color:#43358f; font:inherit; font-weight:800; }
+    .profile-note { margin-top:9px; color:rgba(255,255,255,.7); font-size:11px; position:relative; z-index:1; }
+    .gate { margin:34px 16px; padding:24px 19px; border-radius:22px; background:var(--card); text-align:center; box-shadow:0 12px 30px rgba(0,0,0,.10); }
+    .gate-icon { font-size:42px; margin-bottom:8px; }
+    .gate h2 { margin:0 0 8px; font-size:21px; }
+    .gate p { color:var(--hint); margin:0 0 16px; }
+    .gate .btn { margin-top:9px; }
+    .bar { padding-top:6px; }
+    .tabs { border-radius:16px; }
+    .tab.active { border-radius:12px; }
   </style>
 </head>
 <body>
@@ -106,7 +132,10 @@
     <p class="sub">Ресурс паки, конфиги и шейдеры</p>
   </header>
 
-  <div class="bar">
+  <section class="profile" id="profile" hidden></section>
+  <section class="gate" id="gate" hidden></section>
+
+  <div class="bar" id="catalogBar">
     <div class="tabs" id="tabs"></div>
     <input class="search" id="search" type="search" placeholder="Поиск" autocomplete="off">
   </div>
@@ -134,7 +163,7 @@
     const tg = window.Telegram && window.Telegram.WebApp;
     if (tg) { tg.ready(); tg.expand(); }
 
-    const state = { cat: CATS[0].id, q: "", items: [], admin: false, demo: !API_URL };
+    const state = { cat: CATS[0].id, q: "", items: [], admin: false, adminCode: "", profile: null, botUsername: "", demo: !API_URL, locked: false };
 
     // ---------- Вспомогательные ----------
     function h(tag, props, ...kids) {
@@ -175,6 +204,7 @@
       const headers = { ...(opts.headers || {}) };
       if (tg && tg.initData) headers.Authorization = "tma " + tg.initData;
       if (opts.body) headers["Content-Type"] = "application/json";
+      if (state.adminCode) headers["X-Admin-Code"] = state.adminCode;
       const res = await fetch(API_URL + path, { ...opts, headers });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "http_" + res.status);
@@ -189,33 +219,74 @@
     ];
 
     async function load() {
-      if (state.demo) {
-        state.items = DEMO_ITEMS;
-        render();
-        return;
-      }
+      if (state.demo) { state.items = DEMO_ITEMS; render(); return; }
       try {
-        const [items, me] = await Promise.all([api("/api/items"), api("/api/me").catch(() => ({ admin: false }))]);
-        state.items = items.items;
+        const me = await api("/api/me");
         state.admin = !!me.admin;
+        state.profile = me.user || null;
+        state.botUsername = me.bot_username || "";
         document.getElementById("fab").hidden = !state.admin;
-        const WHY = {
-          no_bot_token: "На сервере не задан BOT_TOKEN. Добавь его в Cloudflare как Secret.",
-          bad_signature: "Подпись Telegram не сошлась: в BOT_TOKEN не токен этого бота (или он устарел).",
-          no_initdata: "Приложение открыто не из Telegram.",
-          not_in_admin_list: "Твоего ID нет в списке админов на сервере.",
-        };
-        const u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
-        const notes = [];
-        if (me.open) notes.push(h("div", { class: "banner" }, "⚠️ Открытый режим: админом может стать любой. Скоро отключится сам."));
-        if (u && u.id === OWNER_ID && me.why && me.why !== "ok") {
-          notes.push(h("div", { class: "banner" }, "Диагностика: " + (WHY[me.why] || me.why)));
+        if (!me.authenticated) {
+          showGate("Открой бота", "Для входа в каталог запусти бота в Telegram и открой Mini App через кнопку в нём.", "🤖", false);
+          return;
         }
-        document.getElementById("banner").replaceChildren(...notes);
+        if (!me.subscribed) {
+          showGate("Нужна подписка", "Подпишись на канал MineLine, чтобы получить доступ к боту и каталогу.", "🔒", true);
+          return;
+        }
+        state.locked = false;
+        document.getElementById("gate").hidden = true;
+        document.getElementById("catalogBar").hidden = false;
+        document.getElementById("profile").hidden = false;
+        renderProfile();
+        const items = await api("/api/items");
+        state.items = items.items || [];
+        render();
       } catch (e) {
-        document.getElementById("banner").replaceChildren(h("div", { class: "banner" }, "Не удалось загрузить каталог. Проверь интернет и попробуй позже."));
+        showGate("Не удалось подключиться", "Проверь соединение и попробуй обновить приложение. Если проблема повторяется, сообщи администратору.", "⚠️", false);
       }
-      render();
+    }
+
+    function showGate(title, description, icon, needsJoin) {
+      state.locked = true;
+      document.getElementById("profile").hidden = true;
+      document.getElementById("catalogBar").hidden = true;
+      document.getElementById("grid").replaceChildren();
+      document.getElementById("banner").replaceChildren();
+      const gate = document.getElementById("gate");
+      gate.hidden = false;
+      const children = [h("div", { class: "gate-icon" }, icon), h("h2", {}, title), h("p", {}, description)];
+      if (needsJoin) {
+        children.push(h("button", { class: "btn", onclick: () => openLink("https://t.me/mineline_telegram") }, "📢 Подписаться на канал"));
+        children.push(h("button", { class: "btn ghost", onclick: () => load() }, "Я подписался — проверить"));
+      }
+      gate.replaceChildren(...children);
+    }
+
+    function renderProfile() {
+      const p = state.profile;
+      if (!p) return;
+      const name = p.first_name || (p.username ? "@" + p.username : "Пользователь");
+      const avatar = p.photo_url && /^https:\/\//i.test(p.photo_url)
+        ? h("img", { class: "avatar", src: p.photo_url, alt: "" })
+        : h("div", { class: "avatar-fallback" }, "👤");
+      const link = state.botUsername ? `https://t.me/${state.botUsername}?start=ref_${p.id}` : "Ссылка появится после настройки бота";
+      document.getElementById("profile").replaceChildren(
+        h("div", { class: "profile-top" }, avatar,
+          h("div", {}, h("div", { class: "profile-name" }, name), h("div", { class: "profile-caption" }, "Личный кабинет MineLine"))
+        ),
+        h("div", { class: "stats" },
+          h("div", { class: "stat" }, h("div", { class: "stat-value" }, "⭐ " + (p.balance || 0)), h("div", { class: "stat-label" }, "Внутренний баланс")),
+          h("div", { class: "stat" }, h("div", { class: "stat-value" }, "👥 " + (p.referrals || 0)), h("div", { class: "stat-label" }, "Приглашено друзей"))
+        ),
+        h("div", { class: "referral" }, h("div", { class: "referral-link" }, link),
+          h("button", { class: "copy-btn", onclick: async () => {
+            try { await navigator.clipboard.writeText(link); toast("Ссылка скопирована"); }
+            catch { toast("Не удалось скопировать ссылку"); }
+          } }, "Копировать")
+        ),
+        h("div", { class: "profile-note" }, "За нового приглашённого пользователя: +2 ⭐. Звёзды нельзя вывести или обменять на деньги.")
+      );
     }
 
     // ---------- Отрисовка ----------
@@ -469,9 +540,34 @@
       );
     }
 
+    function openAdminGate() {
+      if (state.adminCode) { openEditor(null); return; }
+      const code = h("input", { type: "text", autocomplete: "off", placeholder: "Введите админ-код" });
+      const submit = h("button", { class: "btn" }, "Подтвердить");
+      submit.addEventListener("click", async () => {
+        submit.disabled = true;
+        try {
+          await api("/api/admin/unlock", { method: "POST", body: JSON.stringify({ code: code.value }) });
+          state.adminCode = code.value;
+          haptic("success");
+          toast("Доступ к добавлению открыт");
+          closeSheet && closeSheet();
+          openEditor(null);
+        } catch (e) {
+          submit.disabled = false;
+          toast(e.message === "bad_admin_code" ? "Неверный админ-код" : e.message === "admin_code_not_configured" ? "Админ-код ещё не настроен на сервере" : "Не удалось проверить код");
+        }
+      });
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "🔐 Доступ администратора"),
+        h("div", { class: "desc" }, "Для добавления товара введи админ-код."),
+        h("label", {}, "Админ-код"), code, submit
+      ));
+    }
+
     // ---------- События ----------
     document.getElementById("search").addEventListener("input", (e) => { state.q = e.target.value; render(); });
-    document.getElementById("fab").addEventListener("click", () => openEditor(null));
+    document.getElementById("fab").addEventListener("click", () => openAdminGate());
 
     load();
   </script>
