@@ -38,7 +38,7 @@ async function route(request, env, cors) {
   // Telegram bot webhook
   if (path === "/telegram/webhook" && method === "POST") {
     const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
-    if (!env.TELEGRAM_WEBHOOK_SECRET || !safeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
+    if (!safeEqual(secret, await deriveWebhookSecret(env))) {
       return json({ error: "webhook_forbidden" }, 403, cors);
     }
     const update = await readJson(request);
@@ -126,7 +126,16 @@ async function route(request, env, cors) {
       const body = await readJson(request);
       if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
       if (!safeEqual(String(body?.code || ""), String(env.ADMIN_CODE))) return json({ error: "bad_admin_code" }, 403, cors);
-      return json({ ok: true }, 200, cors);
+      let webhook = false;
+      try {
+        await telegramCall(env, "setWebhook", {
+          url: "https://mybot.fleexis123.workers.dev/telegram/webhook",
+          secret_token: await deriveWebhookSecret(env),
+          allowed_updates: ["message", "callback_query"]
+        });
+        webhook = true;
+      } catch (err) { console.error("set_webhook_failed", err); }
+      return json({ ok: true, webhook }, 200, cors);
     }
     if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
     if (!safeEqual(request.headers.get("X-Admin-Code") || "", String(env.ADMIN_CODE))) {
@@ -310,7 +319,7 @@ function corsHeaders(request) {
   const origin = request.headers.get("Origin");
   const h = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Code",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -329,6 +338,11 @@ function json(data, status, cors) {
 // ---------- Referral, profile, channel membership and Telegram bot ----------
 const REQUIRED_CHANNEL = "@mineline_telegram";
 const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
+
+async function deriveWebhookSecret(env) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.BOT_TOKEN || ""));
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/=/g, "").replace(/\\+/g, "-").replace(/\\//g, "_");
+}
 
 async function telegramCall(env, method, payload = {}) {
   if (!env.BOT_TOKEN) throw new Error("bot_token_missing");
