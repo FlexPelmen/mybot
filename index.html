@@ -227,7 +227,13 @@
         state.botUsername = me.bot_username || "";
         document.getElementById("fab").hidden = !state.admin;
         if (!me.authenticated) {
-          showGate("Открой бота", "Для входа в каталог запусти бота в Telegram и открой Mini App через кнопку в нём.", "🤖", false);
+          const reasons = {
+            no_initdata: "Telegram не передал данные авторизации. Закрой Mini App и открой его через кнопку «Открыть Mini App» в личном чате бота.",
+            bad_signature: "Подпись Telegram не совпала с токеном бота на сервере. Вероятно, Worker подключён к другому боту.",
+            no_bot_token: "На сервере не настроен токен Telegram-бота."
+          };
+          const detail = reasons[me.why] || ("Код диагностики: " + String(me.why || "unknown"));
+          showGate("Не удалось подтвердить Telegram", detail, "🤖", false);
           return;
         }
         if (!me.subscribed) {
