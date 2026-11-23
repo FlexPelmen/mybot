@@ -341,7 +341,7 @@ const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
 
 async function deriveWebhookSecret(env) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.BOT_TOKEN || ""));
-  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/=/g, "").replace(/\\+/g, "-").replace(/\\//g, "_");
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 async function telegramCall(env, method, payload = {}) {
