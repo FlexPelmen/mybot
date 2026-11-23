@@ -1,6 +1,7 @@
 name = "mybot"
 main = "worker/worker.js"
 compatibility_date = "2026-11-01"
+keep_vars = true
 
 [[d1_databases]]
 binding = "DB"
@@ -9,3 +10,5 @@ database_id = "3e961ef6-5418-4029-aafd-e1a5d24c9b4d"
 
 [vars]
 ADMIN_IDS = "5171403469"
+# Временный открытый режим админки: сам выключится в указанный момент (unix-время, +3 часа)
+OPEN_ADMIN_UNTIL = "1795416952"

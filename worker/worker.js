@@ -36,11 +36,14 @@ async function route(request, env, cors) {
   }
 
   // Кто сейчас пользуется приложением
-  const user = await getUser(request, env);
-  const isAdmin = !!user && isAdminId(user.id, env);
+  const { user, why } = await getAuth(request, env);
+  const listed = !!user && isAdminId(user.id, env);
+  // Временный открытый режим: пока не наступит время OPEN_ADMIN_UNTIL (unix, секунды), админ — любой
+  const open = Date.now() / 1000 < Number(env.OPEN_ADMIN_UNTIL || 0);
+  const isAdmin = open || listed;
 
   if (path === "/api/me" && method === "GET") {
-    return json({ admin: isAdmin }, 200, cors);
+    return json({ admin: isAdmin, open, why: listed ? "ok" : why === "ok" ? "not_in_admin_list" : why }, 200, cors);
   }
 
   if (path === "/api/items" && method === "GET") {
@@ -200,10 +203,12 @@ async function readJson(request) {
 
 // ---------- Проверка пользователя Telegram ----------
 
-async function getUser(request, env) {
+async function getAuth(request, env) {
   const auth = request.headers.get("Authorization") || "";
-  if (!auth.startsWith("tma ")) return null;
-  return verifyInitData(auth.slice(4), env.BOT_TOKEN);
+  if (!env.BOT_TOKEN) return { user: null, why: "no_bot_token" };
+  if (!auth.startsWith("tma ")) return { user: null, why: "no_initdata" };
+  const user = await verifyInitData(auth.slice(4), env.BOT_TOKEN);
+  return user ? { user, why: "ok" } : { user: null, why: "bad_signature" };
 }
 
 function isAdminId(id, env) {

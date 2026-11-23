@@ -121,6 +121,8 @@
     const API_URL = "https://mybot.fleexis123.workers.dev";
     // Username в Telegram для кнопки «Купить» (без @). Пусто — кнопка покажет подсказку.
     const CONTACT = "";
+    // Твой Telegram ID: только чтобы показать тебе причину, если админка не открылась.
+    const OWNER_ID = 5171403469;
     // =======================
 
     const CATS = [
@@ -197,7 +199,19 @@
         state.items = items.items;
         state.admin = !!me.admin;
         document.getElementById("fab").hidden = !state.admin;
-        document.getElementById("banner").replaceChildren();
+        const WHY = {
+          no_bot_token: "На сервере не задан BOT_TOKEN. Добавь его в Cloudflare как Secret.",
+          bad_signature: "Подпись Telegram не сошлась: в BOT_TOKEN не токен этого бота (или он устарел).",
+          no_initdata: "Приложение открыто не из Telegram.",
+          not_in_admin_list: "Твоего ID нет в списке админов на сервере.",
+        };
+        const u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+        const notes = [];
+        if (me.open) notes.push(h("div", { class: "banner" }, "⚠️ Открытый режим: админом может стать любой. Скоро отключится сам."));
+        if (u && u.id === OWNER_ID && me.why && me.why !== "ok") {
+          notes.push(h("div", { class: "banner" }, "Диагностика: " + (WHY[me.why] || me.why)));
+        }
+        document.getElementById("banner").replaceChildren(...notes);
       } catch (e) {
         document.getElementById("banner").replaceChildren(h("div", { class: "banner" }, "Не удалось загрузить каталог. Проверь интернет и попробуй позже."));
       }
