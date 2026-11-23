@@ -33,7 +33,7 @@ async function route(request, env, cors) {
 
   if (path === "/" || path === "/api/health") {
     try { await ensureTelegramBot(env); } catch (err) { console.error("bot_setup_failed", err); }
-    return json({ ok: true }, 200, cors);
+    return json({ ok: true, bot_ready: telegramBotConfigured }, 200, cors);
   }
 
   // Telegram bot webhook
