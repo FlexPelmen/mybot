@@ -14,14 +14,14 @@ let cachedBotUsername = "";
 const subscriptionCache = new Map();
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const cors = corsHeaders(request);
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
     }
     try {
       await ensureSchema(env);
-      return await route(request, env, cors);
+      return await route(request, env, cors, ctx);
     } catch (err) {
       console.error(err);
       return json({ error: "server_error" }, 500, cors);
@@ -29,28 +29,41 @@ export default {
   },
 };
 
-async function route(request, env, cors) {
+async function route(request, env, cors, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
 
   if (path === "/" || path === "/api/health") {
-    let bot = { configured: !!env.BOT_TOKEN, ready: false };
-    try {
-      const setup = await ensureTelegramBot(env);
-      bot = {
-        configured: true,
-        ready: true,
-        username: setup.username || "",
-        webhook_url: setup.webhook_url,
-        setup: setup.already_configured ? "already_configured" : "configured"
-      };
-    } catch (err) {
-      console.error("bot_diagnostics_failed", err);
-      bot.configured = !!env.BOT_TOKEN;
-      bot.error = String(err?.message || "telegram_api_error");
+    const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
+    if (!env.BOT_TOKEN) {
+      return json({ ok: true, bot_ready: false, bot: { configured: false, setup: "missing_token" } }, 200, cors);
     }
-    return json({ ok: true, bot_ready: !!bot.ready, bot }, 200, cors);
+    const fingerprint = await tokenFingerprint(env.BOT_TOKEN);
+    const saved = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = 'telegram_bot_fingerprint'"
+    ).first();
+    if (saved?.value === fingerprint) {
+      const username = await getBotUsername(env);
+      return json({ ok: true, bot_ready: true, bot: { configured: true, username, webhook_url: webhookUrl, setup: "ready" } }, 200, cors);
+    }
+
+    const lock = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = 'telegram_setup_lock'"
+    ).first();
+    const now = Math.floor(Date.now() / 1000);
+    if (lock && now - Number(lock.value) < 60) {
+      return json({ ok: true, bot_ready: false, bot: { configured: true, setup: "in_progress" } }, 200, cors);
+    }
+
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_setup_lock', ?)"
+    ).bind(String(now)).run();
+    ctx.waitUntil(ensureTelegramBot(env).catch(async (err) => {
+      console.error("bot_setup_failed", err);
+      await env.DB.prepare("DELETE FROM app_settings WHERE key = 'telegram_setup_lock'").run().catch(() => {});
+    }));
+    return json({ ok: true, bot_ready: false, bot: { configured: true, setup: "scheduled" } }, 200, cors);
   }
 
   // Telegram bot webhook
@@ -404,7 +417,8 @@ async function ensureTelegramBot(env) {
 
     await env.DB.batch([
       env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_fingerprint', ?)").bind(fingerprint),
-      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_username', ?)").bind(String(me.username || ""))
+      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_username', ?)").bind(String(me.username || "")),
+      env.DB.prepare("DELETE FROM app_settings WHERE key = 'telegram_setup_lock'")
     ]);
     telegramBotConfigured = true;
     cachedBotUsername = me.username || "";
