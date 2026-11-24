@@ -9,6 +9,9 @@ const CATEGORIES = ["resourcepacks", "configs", "shaders"];
 const MAX_IMAGE_CHARS = 700000;
 
 let schemaReady = false;
+let telegramSetupPromise = null;
+let cachedBotUsername = "";
+const subscriptionCache = new Map();
 
 export default {
   async fetch(request, env) {
@@ -32,27 +35,22 @@ async function route(request, env, cors) {
   const method = request.method;
 
   if (path === "/" || path === "/api/health") {
-    let bot = { configured: false };
+    let bot = { configured: !!env.BOT_TOKEN, ready: false };
     try {
-      await ensureTelegramBot(env);
-      const [webhook, me] = await Promise.all([
-        telegramCall(env, "getWebhookInfo"),
-        telegramCall(env, "getMe")
-      ]);
+      const setup = await ensureTelegramBot(env);
       bot = {
-        configured: telegramBotConfigured,
-        username: me.username || "",
-        webhook_url: webhook.url || "",
-        pending_updates: webhook.pending_update_count || 0,
-        last_error_date: webhook.last_error_date || null,
-        last_error_message: webhook.last_error_message || null,
-        allowed_updates: webhook.allowed_updates || []
+        configured: true,
+        ready: true,
+        username: setup.username || "",
+        webhook_url: setup.webhook_url,
+        setup: setup.already_configured ? "already_configured" : "configured"
       };
     } catch (err) {
       console.error("bot_diagnostics_failed", err);
+      bot.configured = !!env.BOT_TOKEN;
       bot.error = String(err?.message || "telegram_api_error");
     }
-    return json({ ok: true, bot_ready: telegramBotConfigured, bot }, 200, cors);
+    return json({ ok: true, bot_ready: !!bot.ready, bot }, 200, cors);
   }
 
   // Telegram bot webhook
@@ -149,13 +147,9 @@ async function route(request, env, cors) {
       if (!safeEqual(String(body?.code || ""), String(env.ADMIN_CODE))) return json({ error: "bad_admin_code" }, 403, cors);
       let webhook = false;
       try {
-        await telegramCall(env, "setWebhook", {
-          url: "https://mybot.fleexis123.workers.dev/telegram/webhook",
-          secret_token: await deriveWebhookSecret(env),
-          allowed_updates: ["message", "callback_query"]
-        });
+        await ensureTelegramBot(env);
         webhook = true;
-      } catch (err) { console.error("set_webhook_failed", err); }
+      } catch (err) { console.error("bot_setup_failed", err); }
       return json({ ok: true, webhook }, 200, cors);
     }
     if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
@@ -333,6 +327,9 @@ async function ensureSchema(env) {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id TEXT NOT NULL, referred_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL DEFAULT 0)"
   ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+  ).run();
   schemaReady = true;
 }
 
@@ -363,29 +360,69 @@ const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
 let telegramBotConfigured = false;
 
 async function ensureTelegramBot(env) {
-  if (telegramBotConfigured || !env.BOT_TOKEN) return;
-  const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
-  // Always re-apply the expected secret token as getWebhookInfo never returns it.
-  // This repairs stale webhook configuration even when the URL is already correct.
-  await telegramCall(env, "setWebhook", {
-    url: webhookUrl,
-    secret_token: await deriveWebhookSecret(env),
-    allowed_updates: ["message", "callback_query"]
-  });
-  await telegramCall(env, "setMyCommands", {
-    commands: [
-      { command: "start", description: "Открыть MineLine" },
-      { command: "profile", description: "Мой профиль и баланс" }
-    ]
-  });
-  await telegramCall(env, "setChatMenuButton", {
-    menu_button: {
-      type: "web_app",
-      text: "Открыть каталог",
-      web_app: { url: MINI_APP_URL }
+  if (!env.BOT_TOKEN) throw new Error("bot_token_missing");
+  if (telegramSetupPromise) return telegramSetupPromise;
+
+  telegramSetupPromise = (async () => {
+    const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
+    const fingerprint = await tokenFingerprint(env.BOT_TOKEN);
+    const saved = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = 'telegram_bot_fingerprint'"
+    ).first();
+    const savedUsername = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = 'telegram_bot_username'"
+    ).first();
+
+    // A matching fingerprint means this exact token was already configured.
+    // Avoid calling Telegram on every health check / Worker cold start.
+    if (saved?.value === fingerprint) {
+      telegramBotConfigured = true;
+      cachedBotUsername = savedUsername?.value || "";
+      return { configured: true, username: cachedBotUsername, webhook_url: webhookUrl, already_configured: true };
     }
-  });
-  telegramBotConfigured = true;
+
+    // Validate the token first; do not persist setup state until all methods succeed.
+    const me = await telegramCall(env, "getMe");
+    await telegramCall(env, "setWebhook", {
+      url: webhookUrl,
+      secret_token: await deriveWebhookSecret(env),
+      allowed_updates: ["message", "callback_query"]
+    });
+    await telegramCall(env, "setMyCommands", {
+      commands: [
+        { command: "start", description: "Открыть MineLine" },
+        { command: "profile", description: "Мой профиль и баланс" }
+      ]
+    });
+    await telegramCall(env, "setChatMenuButton", {
+      menu_button: {
+        type: "web_app",
+        text: "Открыть каталог",
+        web_app: { url: MINI_APP_URL }
+      }
+    });
+
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_fingerprint', ?)").bind(fingerprint),
+      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_username', ?)").bind(String(me.username || ""))
+    ]);
+    telegramBotConfigured = true;
+    cachedBotUsername = me.username || "";
+    return { configured: true, username: cachedBotUsername, webhook_url: webhookUrl, already_configured: false };
+  })();
+
+  try {
+    return await telegramSetupPromise;
+  } catch (err) {
+    telegramSetupPromise = null;
+    telegramBotConfigured = false;
+    throw err;
+  }
+}
+
+async function tokenFingerprint(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function deriveWebhookSecret(env) {
@@ -406,14 +443,19 @@ async function telegramCall(env, method, payload = {}) {
 }
 
 async function isSubscribed(userId, env) {
-  try {
-    const member = await telegramCall(env, "getChatMember", { chat_id: REQUIRED_CHANNEL, user_id: Number(userId) });
-    return member.status === "creator" || member.status === "administrator" || member.status === "member" ||
-      (member.status === "restricted" && member.is_member === true);
-  } catch (err) {
-    console.error("membership_check_failed", err);
-    return false;
-  }
+  const id = String(userId);
+  const cachedUntil = subscriptionCache.get(id) || 0;
+  if (cachedUntil > Date.now()) return true;
+
+  // Cache only confirmed membership. A user who just subscribed can retry immediately.
+  const member = await telegramCall(env, "getChatMember", {
+    chat_id: REQUIRED_CHANNEL,
+    user_id: Number(id)
+  });
+  const subscribed = member.status === "creator" || member.status === "administrator" || member.status === "member" ||
+    (member.status === "restricted" && member.is_member === true);
+  if (subscribed) subscriptionCache.set(id, Date.now() + 20000);
+  return subscribed;
 }
 
 async function saveUser(user, env) {
@@ -456,10 +498,12 @@ async function creditReferral(referrerId, referredId, env) {
 }
 
 async function getBotUsername(env) {
-  try {
-    const me = await telegramCall(env, "getMe");
-    return me.username || "";
-  } catch { return ""; }
+  if (cachedBotUsername) return cachedBotUsername;
+  const row = await env.DB.prepare(
+    "SELECT value FROM app_settings WHERE key = 'telegram_bot_username'"
+  ).first();
+  cachedBotUsername = row?.value || "";
+  return cachedBotUsername;
 }
 
 async function sendBotMessage(env, chatId, text, replyMarkup) {
