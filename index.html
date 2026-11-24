@@ -302,8 +302,14 @@
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 20000);
       let res;
-      try { res = await fetch(API_URL + path, { method: opts.method, body: opts.body, headers, signal: ctl.signal }); }
-      finally { clearTimeout(timer); }
+      try {
+        try { res = await fetch(API_URL + path, { method: opts.method, body: opts.body, headers, signal: ctl.signal }); }
+        catch (e) {
+          // редкий сбой сети или медленный старт сервера: один тихий повтор (только для чтения)
+          if (opts.method && opts.method !== "GET") throw e;
+          res = await fetch(API_URL + path, { method: "GET", headers });
+        }
+      } finally { clearTimeout(timer); }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const e = new Error(data.error || "http_" + res.status);
