@@ -3,167 +3,249 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Каталог</title>
+  <title>FlexMarket</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
   <style>
+    /* Тёмная тема — обсидиан, светлая — камень. Акцент — золото из инвентаря Minecraft. */
     :root {
-      --bg: var(--tg-theme-bg-color, #ffffff);
-      --text: var(--tg-theme-text-color, #111111);
-      --hint: var(--tg-theme-hint-color, #7d7d7d);
-      --link: var(--tg-theme-link-color, #2481cc);
-      --accent: var(--tg-theme-button-color, #2481cc);
-      --accent-text: var(--tg-theme-button-text-color, #ffffff);
-      --card: var(--tg-theme-secondary-bg-color, #f1f1f4);
-      --free: #2ea44f;
-      --danger: #e5484d;
-      --radius: 16px;
+      --bg: #1a1424; --panel: #2a2140; --panel2: #382d58; --edge: #0d0916;
+      --text: #f2edff; --hint: #a99dc9; --gold: #ffc93c; --gold-ink: #3a2700;
+      --free: #62d66f; --danger: #ff6b6b; --hi: rgba(255,255,255,.14); --lo: rgba(0,0,0,.38);
+      --px: "Press Start 2P", ui-monospace, Menlo, monospace;
+      --notch: polygon(0 4px,4px 4px,4px 0,calc(100% - 4px) 0,calc(100% - 4px) 4px,100% 4px,100% calc(100% - 4px),calc(100% - 4px) calc(100% - 4px),calc(100% - 4px) 100%,4px 100%,4px calc(100% - 4px),0 calc(100% - 4px));
+    }
+    :root[data-theme="light"] {
+      --bg: #d9d5cb; --panel: #c4bfb2; --panel2: #e8e5dc; --edge: #3a362c;
+      --text: #1d1a14; --hint: #5d584b; --gold: #e0a000; --gold-ink: #2b1d00;
+      --free: #1f8a30; --danger: #c93030; --hi: rgba(255,255,255,.55); --lo: rgba(0,0,0,.2);
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; }
     body {
-      background: var(--bg);
-      color: var(--text);
+      background: var(--bg); color: var(--text);
       font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      padding-bottom: calc(90px + env(safe-area-inset-bottom));
+      padding: calc(64px + env(safe-area-inset-top)) 0 calc(96px + env(safe-area-inset-bottom));
+      min-height: 100vh;
     }
-    header { padding: 16px 14px 8px; }
-    h1 { margin: 0; font-size: 26px; letter-spacing: -.3px; }
-    .sub { margin: 2px 0 0; color: var(--hint); }
+    [hidden] { display: none !important; }
+    svg.pix { display: block; shape-rendering: crispEdges; }
+    .px { font-family: var(--px); letter-spacing: 0; }
 
-    .bar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 8px 14px 10px; }
-    .tabs { display: flex; gap: 6px; background: var(--card); border-radius: 14px; padding: 4px; }
+    /* Базовый «слот»: ступенчатые углы и объёмная рамка */
+    .slot {
+      background: var(--panel); clip-path: var(--notch);
+      box-shadow: inset 3px 3px 0 var(--hi), inset -3px -3px 0 var(--lo);
+    }
+    .slot.sunk { background: var(--edge); box-shadow: inset 3px 3px 0 rgba(0,0,0,.45), inset -3px -3px 0 var(--hi); }
+    :root[data-theme="light"] .slot.sunk { background: #b3ad9e; }
+
+    /* Верхняя панель */
+    .top {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10; background: var(--bg);
+      padding: calc(10px + env(safe-area-inset-top)) 14px 10px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 4px solid var(--edge);
+    }
+    .brand { font-family: var(--px); font-size: 13px; display: flex; align-items: center; gap: 9px; }
+    .brand b { color: var(--gold); font-weight: 400; }
+    .chip { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-family: var(--px); font-size: 11px; }
+
+    /* Категории и поиск */
+    .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 14px 14px 0; }
     .tab {
-      flex: 1; border: 0; background: transparent; color: var(--hint);
-      padding: 9px 4px; border-radius: 11px; font: inherit; font-weight: 600; font-size: 13.5px; cursor: pointer;
-      transition: background .15s, color .15s;
+      border: 0; color: var(--text); font: inherit; font-weight: 600; font-size: 12.5px; padding: 11px 4px 10px;
+      display: flex; flex-direction: column; align-items: center; gap: 6px; cursor: pointer;
     }
-    .tab.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.15); }
-    .search {
-      width: 100%; margin-top: 8px; border: 0; outline: 0; border-radius: 12px;
-      background: var(--card); color: var(--text); font: inherit; padding: 11px 14px;
-    }
-    .search::placeholder { color: var(--hint); }
+    .tab.on { background: var(--gold); color: var(--gold-ink); }
+    .search { margin: 10px 14px 0; display: block; }
+    .search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; padding: 12px 14px; }
+    .search input::placeholder { color: var(--hint); }
 
-    .banner { margin: 6px 14px; padding: 10px 12px; border-radius: 12px; background: var(--card); color: var(--hint); font-size: 13px; }
+    .note { margin: 12px 14px 0; padding: 11px 13px; font-size: 13px; color: var(--hint); }
+    .note b { color: var(--text); }
+    .note.warn { color: var(--text); background: var(--panel2); }
 
-    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 4px 14px; }
+    /* Карточки товаров */
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 14px; }
     @media (min-width: 640px) { .grid { grid-template-columns: repeat(4, 1fr); } }
-    .item { background: var(--card); border-radius: var(--radius); overflow: hidden; cursor: pointer; position: relative; transition: transform .12s; }
-    .item:active { transform: scale(.97); }
-    .thumb { aspect-ratio: 4 / 3; width: 100%; display: block; object-fit: cover; background: var(--card); }
-    .ph { display: flex; align-items: center; justify-content: center; font-size: 38px; }
-    .info { padding: 10px 12px 12px; }
-    .name { font-weight: 650; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.8em; }
-    .meta { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; font-size: 12.5px; color: var(--hint); }
-    .price { font-weight: 700; font-size: 13px; padding: 3px 9px; border-radius: 999px; background: rgba(46,164,79,.16); color: var(--free); }
-    .price.paid { background: rgba(255,170,0,.18); color: #d98a00; }
-    .badge-hidden { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 999px; }
-    .empty { text-align: center; color: var(--hint); padding: 50px 20px; grid-column: 1 / -1; }
+    .card { border: 0; padding: 6px; text-align: left; color: var(--text); font: inherit; cursor: pointer; position: relative; display: block; width: 100%; }
+    .card:active { transform: translateY(2px); }
+    .card.top1 { background: var(--gold); }
+    .card.top1 .name, .card.top1 .dl { color: var(--gold-ink); }
+    .thumb { aspect-ratio: 4 / 3; width: 100%; display: block; object-fit: cover; background: var(--edge); }
+    .ph {
+      display: grid; place-items: center;
+      background: repeating-conic-gradient(var(--c1) 0 25%, var(--c2) 0 50%) 0 0 / 24px 24px;
+    }
+    [data-cat="resourcepacks"] { --c1: #3f7a46; --c2: #4a8c52; }
+    [data-cat="configs"] { --c1: #52586b; --c2: #5f667b; }
+    [data-cat="shaders"] { --c1: #5b3f94; --c2: #6a4aa8; }
+    .ph svg { filter: drop-shadow(3px 3px 0 rgba(0,0,0,.35)); }
+    .tag {
+      position: absolute; top: 12px; left: 12px; font-family: var(--px); font-size: 8px; padding: 6px 7px 5px;
+      background: var(--edge); color: var(--free);
+    }
+    .tag.paid { color: var(--gold); }
+    .tag.off { left: auto; right: 12px; color: var(--hint); }
+    .name { font-weight: 650; font-size: 14px; padding: 9px 4px 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 3em; }
+    .dl { display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px; color: var(--hint); font-size: 12px; }
+    .empty { grid-column: 1 / -1; text-align: center; color: var(--hint); padding: 46px 16px; }
+    .empty svg { margin: 0 auto 12px; opacity: .8; }
+
+    /* Нижняя панель-хотбар */
+    .hotbar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--bg);
+      border-top: 4px solid var(--edge); padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    .hb { border: 0; font: inherit; color: var(--text); padding: 10px 4px 8px; display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .hb.on { outline: 3px solid #fff; outline-offset: -3px; background: var(--panel2); }
+    :root[data-theme="light"] .hb.on { outline-color: #1d1a14; }
 
     .fab {
-      position: fixed; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 8;
-      width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-text);
-      font-size: 30px; line-height: 1; box-shadow: 0 6px 18px rgba(0,0,0,.3); cursor: pointer;
+      position: fixed; right: 16px; bottom: calc(98px + env(safe-area-inset-bottom)); z-index: 9; border: 0; width: 58px; height: 58px;
+      background: var(--gold); color: var(--gold-ink); display: grid; place-items: center; cursor: pointer;
     }
+    .fab:active { transform: translateY(2px); }
 
-    .overlay { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; animation: fade .18s; }
-    .sheet {
-      width: 100%; max-height: 92vh; overflow-y: auto; background: var(--bg); border-radius: 22px 22px 0 0;
-      padding: 0 0 calc(18px + env(safe-area-inset-bottom)); animation: up .22s ease-out;
-    }
-    @keyframes up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
-    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-    .sheet .hero { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; background: var(--card); }
-    .sheet .body { padding: 16px; }
-    .sheet h2 { margin: 0 0 6px; font-size: 22px; }
-    .sheet .desc { color: var(--text); opacity: .85; white-space: pre-wrap; margin: 10px 0 16px; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--hint); font-size: 13px; }
+    /* Профиль */
+    .view { padding-bottom: 8px; }
+    .pad { padding: 14px 14px 0; }
+    .me { display: flex; align-items: center; gap: 13px; padding: 14px; }
+    .ava { width: 56px; height: 56px; flex: none; background: var(--edge); display: grid; place-items: center; overflow: hidden; clip-path: var(--notch); }
+    .ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .me h2 { margin: 0; font-size: 18px; line-height: 1.2; word-break: break-word; }
+    .me p { margin: 3px 0 0; color: var(--hint); font-size: 13px; }
+    .bal { margin-top: 12px; padding: 18px 16px 16px; text-align: center; }
+    .bal .lab { color: var(--hint); font-size: 13px; }
+    .bal .num { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 12px 0 10px; font-family: var(--px); font-size: 30px; color: var(--gold); text-shadow: 3px 3px 0 var(--edge); }
+    .bal .fine { font-size: 12.5px; color: var(--hint); }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .st { padding: 12px 6px 10px; text-align: center; }
+    .st .v { font-family: var(--px); font-size: 16px; }
+    .st .l { margin-top: 8px; font-size: 11.5px; color: var(--hint); }
+    .sec { margin: 22px 2px 8px; font-weight: 700; font-size: 15px; }
+    .how { margin: 0 2px 10px; color: var(--hint); font-size: 13.5px; }
+    .link { padding: 12px 13px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+    .friends { padding: 6px 14px; margin-top: 10px; }
+    .friend { display: flex; align-items: center; gap: 10px; padding: 9px 0; font-size: 14px; }
+    .friend + .friend { border-top: 2px solid var(--lo); }
+    .friend span:last-child { margin-left: auto; font-family: var(--px); font-size: 10px; color: var(--gold); }
+
     .btn {
-      display: block; width: 100%; border: 0; border-radius: 14px; padding: 14px; font: inherit; font-weight: 700;
-      background: var(--accent); color: var(--accent-text); cursor: pointer; margin-top: 8px; text-align: center;
+      display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; border: 0; padding: 14px 12px; font: inherit; font-weight: 700;
+      background: var(--gold); color: var(--gold-ink); cursor: pointer; margin-top: 10px; text-align: center;
     }
-    .btn.ghost { background: var(--card); color: var(--text); }
-    .btn.danger { background: rgba(229,72,77,.14); color: var(--danger); }
+    .btn:active { transform: translateY(2px); }
+    .btn.alt { background: var(--panel2); color: var(--text); }
+    .btn.red { background: var(--panel2); color: var(--danger); }
     .btn:disabled { opacity: .5; }
-    .admin-row { display: flex; gap: 8px; margin-top: 14px; }
-    .admin-row .btn { margin-top: 0; padding: 11px 6px; font-size: 14px; }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .two .btn { margin-top: 10px; }
+    .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .three .btn { margin-top: 12px; padding: 12px 4px; font-size: 13.5px; }
 
-    label { display: block; font-size: 13px; color: var(--hint); margin: 14px 0 6px; }
-    input[type=text], input[type=number], input[type=url], textarea, select {
-      width: 100%; border: 0; outline: 0; border-radius: 12px; background: var(--card); color: var(--text); font: inherit; padding: 12px 14px;
+    /* Экран-заглушка (подписка, ошибки) */
+    .msg { margin: 26px 16px 0; padding: 26px 20px 22px; text-align: center; }
+    .msg .big { display: grid; place-items: center; margin-bottom: 16px; }
+    .msg h2 { margin: 0 0 8px; font-size: 20px; }
+    .msg p { margin: 0 0 8px; color: var(--hint); }
+
+    /* Окна */
+    .overlay { position: fixed; inset: 0; z-index: 30; background: rgba(8,5,14,.7); display: flex; align-items: flex-end; animation: fade .15s; }
+    .sheet {
+      width: 100%; max-height: 92vh; overflow-y: auto; background: var(--bg); border-top: 4px solid var(--edge);
+      padding: 0 0 calc(18px + env(safe-area-inset-bottom)); animation: up .2s ease-out;
     }
-    textarea { min-height: 90px; resize: vertical; }
-    .imgpick { position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; background: var(--card); overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--hint); font-size: 15px; margin: 0; }
+    @keyframes up { from { transform: translateY(36px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    .hero { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; }
+    .body { padding: 16px; }
+    .body h2 { margin: 0 0 10px; font-size: 21px; line-height: 1.2; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .chips .slot { padding: 7px 10px; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+    .desc { white-space: pre-wrap; margin: 14px 0 6px; opacity: .92; }
+    label { display: block; font-size: 13px; color: var(--hint); margin: 14px 0 6px; }
+    .field { display: block; }
+    .field input, .field textarea, .field select { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; padding: 12px 14px; }
+    .field select option { color: #111; }
+    .field textarea { min-height: 92px; resize: vertical; }
+    .imgpick { position: relative; width: 100%; aspect-ratio: 16 / 10; display: grid; place-items: center; color: var(--hint); overflow: hidden; }
     .imgpick img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
-    .check { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-    .check input { width: 20px; height: 20px; }
-    .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); z-index: 40; background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; max-width: 85%; text-align: center; }
-    body { background: radial-gradient(ellipse at 10% 0%, rgba(90,75,210,.20), transparent 42%), var(--bg); }
-    header { padding: 22px 16px 10px; }
-    h1 { font-size: 28px; font-weight: 850; letter-spacing: -.8px; }
-    .profile { margin: 10px 14px 14px; padding: 17px; border-radius: 22px; color: #fff; background: linear-gradient(125deg,#22265d 0%,#5141a5 55%,#8b4ac4 100%); box-shadow: 0 12px 30px rgba(49,39,120,.25); overflow: hidden; position: relative; }
-    .profile:after { content:""; position:absolute; width:170px; height:170px; border-radius:50%; right:-58px; top:-82px; background:rgba(255,255,255,.09); }
-    .profile-top { display:flex; align-items:center; gap:12px; position:relative; z-index:1; }
-    .avatar { width:48px; height:48px; border-radius:50%; object-fit:cover; background:rgba(255,255,255,.18); border:2px solid rgba(255,255,255,.5); }
-    .avatar-fallback { width:48px; height:48px; border-radius:50%; display:grid; place-items:center; background:rgba(255,255,255,.18); font-size:23px; }
-    .profile-name { font-size:17px; font-weight:800; }
-    .profile-caption { color:rgba(255,255,255,.72); font-size:12px; }
-    .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:17px; position:relative; z-index:1; }
-    .stat { padding:12px; border-radius:15px; background:rgba(255,255,255,.13); border:1px solid rgba(255,255,255,.12); }
-    .stat-value { font-size:23px; font-weight:850; line-height:1.15; }
-    .stat-label { margin-top:4px; color:rgba(255,255,255,.72); font-size:12px; }
-    .referral { display:flex; align-items:center; gap:8px; margin-top:12px; position:relative; z-index:1; }
-    .referral-link { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:10px 11px; border-radius:12px; background:rgba(0,0,0,.17); font-size:12px; }
-    .copy-btn { border:0; border-radius:12px; padding:10px 12px; background:#fff; color:#43358f; font:inherit; font-weight:800; }
-    .profile-note { margin-top:9px; color:rgba(255,255,255,.7); font-size:11px; position:relative; z-index:1; }
-    .gate { margin:34px 16px; padding:24px 19px; border-radius:22px; background:var(--card); text-align:center; box-shadow:0 12px 30px rgba(0,0,0,.10); }
-    .gate-icon { font-size:42px; margin-bottom:8px; }
-    .gate h2 { margin:0 0 8px; font-size:21px; }
-    .gate p { color:var(--hint); margin:0 0 16px; }
-    .gate .btn { margin-top:9px; }
-    .bar { padding-top:6px; }
-    .tabs { border-radius:16px; }
-    .tab.active { border-radius:12px; }
+    .check { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: var(--text); font-size: 14px; }
+    .check input { width: 20px; height: 20px; accent-color: var(--gold); }
+    .err { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 18px; }
+    .toast { position: fixed; left: 50%; bottom: calc(110px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50; background: var(--edge); color: #fff; padding: 11px 16px; font-size: 14px; max-width: 86%; text-align: center; clip-path: var(--notch); }
+    ul.res { margin: 10px 0 0; padding-left: 18px; font-size: 13.5px; }
+    ul.res li { margin: 4px 0; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Каталог Minecraft</h1>
-    <p class="sub">Ресурс паки, конфиги и шейдеры</p>
-  </header>
-
-  <section class="profile" id="profile" hidden></section>
-  <section class="gate" id="gate" hidden></section>
-
-  <div class="bar" id="catalogBar">
-    <div class="tabs" id="tabs"></div>
-    <input class="search" id="search" type="search" placeholder="Поиск" autocomplete="off">
+  <div class="top">
+    <div class="brand"><span id="logo"></span><span>Flex<b>Market</b></span></div>
+    <div class="chip slot sunk" id="balChip" hidden></div>
   </div>
 
-  <div id="banner"></div>
-  <main class="grid" id="grid"></main>
-  <button class="fab" id="fab" hidden aria-label="Добавить">+</button>
+  <main>
+    <section class="view" id="vCatalog" hidden>
+      <div class="tabs" id="tabs"></div>
+      <label class="search slot sunk" style="margin-bottom:0;color:inherit"><input id="search" type="search" placeholder="Поиск по названию" autocomplete="off"></label>
+      <div id="banner"></div>
+      <div class="grid" id="grid"></div>
+    </section>
+    <section class="view" id="vProfile" hidden></section>
+    <section class="view" id="vMsg" hidden></section>
+  </main>
+
+  <button class="fab slot" id="fab" hidden aria-label="Добавить товар"></button>
+  <nav class="hotbar" id="hotbar" hidden>
+    <button class="hb slot" id="hbCatalog"></button>
+    <button class="hb slot" id="hbProfile"></button>
+  </nav>
 
   <script>
     // ====== НАСТРОЙКИ ======
-    // Адрес сервера (Cloudflare Worker). Пока пусто — приложение работает в демо-режиме.
-    const API_URL = "https://mybot.fleexis123.workers.dev";
-    // Username в Telegram для кнопки «Купить» (без @). Пусто — кнопка покажет подсказку.
-    const CONTACT = "";
-    // Твой Telegram ID: только чтобы показать тебе причину, если админка не открылась.
-    const OWNER_ID = 5171403469;
+    const API_URL = "https://mybot.fleexis123.workers.dev"; // адрес сервера (Cloudflare Worker)
+    const CONTACT = "";                                    // username для кнопки «Купить» (без @)
+    const OWNER_ID = 5171403469;                           // только чтобы показать владельцу причину, если админка не открылась
     // =======================
 
     const CATS = [
-      { id: "resourcepacks", name: "Ресурс паки", icon: "🎨" },
-      { id: "configs", name: "Конфиги", icon: "⚙️" },
-      { id: "shaders", name: "Шейдеры", icon: "✨" },
+      { id: "resourcepacks", name: "Ресурс паки", icon: "cube" },
+      { id: "configs", name: "Конфиги", icon: "gear" },
+      { id: "shaders", name: "Шейдеры", icon: "spark" },
     ];
 
-    const tg = window.Telegram && window.Telegram.WebApp;
-    if (tg) { tg.ready(); tg.expand(); }
+    // Пиксельные иконки 8×8: буква = цвет из палитры, точка = пусто
+    const ICONS = {
+      star: { g: ["...YY...", "...YY...", "YYYYYYYY", ".YYYYYY.", "..YYYY..", "..YYYY..", ".YY..YY.", ".Y....Y."], p: { Y: "#ffc93c" } },
+      cube: { g: ["...tt...", ".tttttt.", "tttttttt", "lllldddd", "lllldddd", "lllldddd", ".lllddd.", "...ld..."], p: { t: "#9be37a", l: "#6cae4f", d: "#8a5a34" } },
+      gear: { g: ["...dd...", ".d.dd.d.", "..dddd..", "dddhhddd", "dddhhddd", "..dddd..", ".d.dd.d.", "...dd..."], p: { d: "#aeb6cc", h: "#4a5068" } },
+      spark: { g: ["...ss...", "...ss...", "..ssss..", "ssssssss", "ssssssss", "..ssss..", "...ss...", "...ss..."], p: { s: "#d9b8ff" } },
+      chest: { g: [".bbbbbb.", "bbbbbbbb", "bddddddb", "bbbggbbb", "bbbggbbb", "bbbbbbbb", "bddddddb", ".bbbbbb."], p: { b: "#b87a3a", d: "#7a4d22", g: "#ffc93c" } },
+      head: { g: [".hhhhhh.", "hhhhhhhh", "ssssssss", "sessses.", "ssssssss", "sssmmsss", ".ssssss.", "..ssss.."], p: { h: "#6b4423", s: "#e0ac82", e: "#2b1a3a", m: "#b4694a" } },
+      plus: { g: ["...pp...", "...pp...", "...pp...", "pppppppp", "pppppppp", "...pp...", "...pp...", "...pp..."], p: { p: "currentColor" } },
+      down: { g: ["...dd...", "...dd...", "...dd...", "dddddddd", ".dddddd.", "..dddd..", "...dd...", "........"], p: { d: "currentColor" } },
+      lock: { g: ["..llll..", ".l....l.", ".l....l.", "gggggggg", "ggggkggg", "ggggkggg", "gggggggg", "gggggggg"], p: { l: "#aeb6cc", g: "#ffc93c", k: "#3a2700" } },
+      warn: { g: ["...rr...", "...rr...", "..rrrr..", "..rwwr..", ".rrwwrr.", ".rrrrrr.", "rrrwwrrr", "rrrrrrrr"], p: { r: "#ff6b6b", w: "#fff" } },
+    };
+    function pix(name, size) {
+      const ic = ICONS[name]; const n = 8;
+      let r = "";
+      ic.g.forEach((row, y) => [...row].forEach((c, x) => { if (c !== "." && ic.p[c]) r += `<rect x="${x}" y="${y}" width="1" height="1" fill="${ic.p[c]}"/>`; }));
+      const wrap = document.createElement("span");
+      wrap.style.display = "inline-flex";
+      wrap.innerHTML = `<svg class="pix" width="${size}" height="${size}" viewBox="0 0 ${n} ${n}" aria-hidden="true">${r}</svg>`;
+      return wrap;
+    }
 
-    const state = { cat: CATS[0].id, q: "", items: [], admin: false, adminCode: "", profile: null, botUsername: "", demo: !API_URL, locked: false };
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+    const state = { cat: CATS[0].id, q: "", items: [], me: null, view: "", adminCode: "", loading: true };
 
     // ---------- Вспомогательные ----------
     function h(tag, props, ...kids) {
@@ -180,163 +262,241 @@
       }
       return node;
     }
+    const $ = (id) => document.getElementById(id);
 
     function toast(text) {
       const t = h("div", { class: "toast" }, text);
       document.body.append(t);
-      setTimeout(() => t.remove(), 2600);
+      setTimeout(() => t.remove(), 2800);
     }
-
     function haptic(type) { try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(type); } catch (e) {} }
+    const catOf = (id) => CATS.find((c) => c.id === id) || CATS[0];
+    const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
+    const imgSrc = (it) => (it.has_image ? `${API_URL}/api/img/${it.id}?v=${it.v}` : "");
+    function openLink(url) { if (tg && tg.openLink) tg.openLink(url); else window.open(url, "_blank"); }
+    function openTg(url) { if (tg && tg.openTelegramLink) tg.openTelegramLink(url); else window.open(url, "_blank"); }
+    function dlWord(n) { const a = n % 100, b = n % 10; return n + (a > 10 && a < 15 ? " скачиваний" : b === 1 ? " скачивание" : b >= 2 && b <= 4 ? " скачивания" : " скачиваний"); }
+    function sortItems(list) { return list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || b.id - a.id); }
 
-    function catOf(id) { return CATS.find((c) => c.id === id) || CATS[0]; }
-
-    function priceLabel(p) { return p > 0 ? `${p} ⭐` : "Бесплатно"; }
-
-    function imgSrc(item) {
-      return item.has_image && API_URL ? `${API_URL}/api/img/${item.id}?v=${item.v}` : "";
+    // ---------- Тема ----------
+    function applyTheme() {
+      const dark = tg && tg.colorScheme ? tg.colorScheme === "dark" : !(window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      try {
+        const c = dark ? "#1a1424" : "#d9d5cb";
+        tg && tg.setHeaderColor && tg.setHeaderColor(c);
+        tg && tg.setBackgroundColor && tg.setBackgroundColor(c);
+        tg && tg.setBottomBarColor && tg.setBottomBarColor(c);
+      } catch (e) {}
     }
-
-    function safeUrl(u) { return /^https?:\/\//i.test(u || "") ? u : ""; }
+    applyTheme();
+    if (tg && tg.onEvent) tg.onEvent("themeChanged", applyTheme);
 
     // ---------- Сервер ----------
     async function api(path, opts = {}) {
       const headers = { ...(opts.headers || {}) };
       if (tg && tg.initData) headers.Authorization = "tma " + tg.initData;
       if (opts.body) headers["Content-Type"] = "application/json";
-      if (state.adminCode) headers["X-Admin-Code"] = state.adminCode;
-      const res = await fetch(API_URL + path, { ...opts, headers });
+      const code = opts.code != null ? opts.code : state.adminCode;
+      if (path.startsWith("/api/admin/") && code) headers["X-Admin-Code"] = code;
+      const res = await fetch(API_URL + path, { method: opts.method, body: opts.body, headers });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "http_" + res.status);
+      if (!res.ok) {
+        const e = new Error(data.error || "http_" + res.status);
+        e.code = data.error || "http_" + res.status; e.retry = data.retry; e.status = res.status;
+        if (e.code === "bad_code" && opts.code == null) state.adminCode = "";
+        throw e;
+      }
       return data;
     }
 
-    const DEMO_ITEMS = [
-      { id: 1, category: "resourcepacks", title: "Faithful Pastel 32x", description: "Мягкие пастельные текстуры для спокойной игры.", price: 0, link: "", downloads: 128, hidden: false },
-      { id: 2, category: "resourcepacks", title: "PvP Clean 16x", description: "Минимум шума, максимум видимости.", price: 25, link: "", downloads: 64, hidden: false },
-      { id: 3, category: "configs", title: "Visual Config Pro", description: "Готовый визуальный конфиг.", price: 0, link: "", downloads: 301, hidden: false },
-      { id: 4, category: "shaders", title: "Soft Glow Shader", description: "Мягкий свет и красивая вода.", price: 0, link: "", downloads: 412, hidden: false },
-    ];
-
-    async function load() {
-      if (state.demo) { state.items = DEMO_ITEMS; render(); return; }
+    // ---------- Загрузка ----------
+    async function load(check) {
       try {
-        const me = await api("/api/me");
-        state.admin = !!me.admin;
-        state.profile = me.user || null;
-        state.botUsername = me.bot_username || "";
-        document.getElementById("fab").hidden = !state.admin;
-        if (!me.authenticated) {
-          const reasons = {
-            no_initdata: "Telegram не передал данные авторизации. Закрой Mini App и открой его через кнопку «Открыть Mini App» в личном чате бота.",
-            bad_signature: "Подпись Telegram не совпала с токеном бота на сервере. Вероятно, Worker подключён к другому боту.",
-            no_bot_token: "На сервере не настроен токен Telegram-бота."
-          };
-          const detail = reasons[me.why] || ("Код диагностики: " + String(me.why || "unknown"));
-          showGate("Не удалось подтвердить Telegram", detail, "🤖", false);
-          return;
-        }
-        if (!me.subscribed) {
-          showGate("Нужна подписка", "Подпишись на канал MineLine, чтобы получить доступ к боту и каталогу.", "🔒", true);
-          return;
-        }
-        state.locked = false;
-        document.getElementById("gate").hidden = true;
-        document.getElementById("catalogBar").hidden = false;
-        document.getElementById("profile").hidden = false;
-        renderProfile();
-        const items = await api("/api/items");
-        state.items = items.items || [];
-        render();
+        const me = await api("/api/me" + (check ? "?check=1" : ""));
+        state.me = me;
+        if (!me.auth) return showMsg("lock", "Открой через бота", authReason(me.why), [btn("Закрыть", "alt", () => tg && tg.close && tg.close())]);
+        if (!me.subscribed) return showGate(me);
+        const res = await api("/api/items");
+        state.items = sortItems(res.items || []);
+        state.loading = false;
+        setView(state.view === "profile" ? "profile" : "catalog");
       } catch (e) {
-        showGate("Не удалось подключиться", "Проверь соединение и попробуй обновить приложение. Если проблема повторяется, сообщи администратору.", "⚠️", false);
+        if (e.code === "subscribe") { state.me = { ...(state.me || {}), subscribed: false }; return showGate(state.me); }
+        showMsg("warn", "Нет связи с сервером", "Проверь интернет и нажми «Повторить». Если не помогает — сообщи администратору.", [btn("Повторить", "", () => load())]);
       }
     }
-
-    function showGate(title, description, icon, needsJoin) {
-      state.locked = true;
-      document.getElementById("profile").hidden = true;
-      document.getElementById("catalogBar").hidden = true;
-      document.getElementById("grid").replaceChildren();
-      document.getElementById("banner").replaceChildren();
-      const gate = document.getElementById("gate");
-      gate.hidden = false;
-      const children = [h("div", { class: "gate-icon" }, icon), h("h2", {}, title), h("p", {}, description)];
-      if (needsJoin) {
-        children.push(h("button", { class: "btn", onclick: () => openLink("https://t.me/mineline_telegram") }, "📢 Подписаться на канал"));
-        children.push(h("button", { class: "btn ghost", onclick: () => load() }, "Я подписался — проверить"));
-      }
-      gate.replaceChildren(...children);
+    function authReason(why) {
+      return ({
+        no_initdata: "Telegram не передал данные входа. Закрой приложение и открой его кнопкой «Открыть» в личном чате с ботом.",
+        bad_signature: "Подпись Telegram не совпала с токеном бота на сервере. Похоже, воркер подключён к другому боту.",
+        no_bot_token: "На сервере не задан токен бота (секрет BOT_TOKEN).",
+      })[why] || "Не получилось подтвердить вход. Закрой и открой приложение заново.";
     }
 
-    function renderProfile() {
-      const p = state.profile;
-      if (!p) return;
-      const name = p.first_name || (p.username ? "@" + p.username : "Пользователь");
-      const avatar = p.photo_url && /^https:\/\//i.test(p.photo_url)
-        ? h("img", { class: "avatar", src: p.photo_url, alt: "" })
-        : h("div", { class: "avatar-fallback" }, "👤");
-      const link = state.botUsername ? `https://t.me/${state.botUsername}?start=ref_${p.id}` : "Ссылка появится после настройки бота";
-      document.getElementById("profile").replaceChildren(
-        h("div", { class: "profile-top" }, avatar,
-          h("div", {}, h("div", { class: "profile-name" }, name), h("div", { class: "profile-caption" }, "Личный кабинет MineLine"))
-        ),
-        h("div", { class: "stats" },
-          h("div", { class: "stat" }, h("div", { class: "stat-value" }, "⭐ " + (p.balance || 0)), h("div", { class: "stat-label" }, "Внутренний баланс")),
-          h("div", { class: "stat" }, h("div", { class: "stat-value" }, "👥 " + (p.referrals || 0)), h("div", { class: "stat-label" }, "Приглашено друзей"))
-        ),
-        h("div", { class: "referral" }, h("div", { class: "referral-link" }, link),
-          h("button", { class: "copy-btn", onclick: async () => {
-            try { await navigator.clipboard.writeText(link); toast("Ссылка скопирована"); }
-            catch { toast("Не удалось скопировать ссылку"); }
-          } }, "Копировать")
-        ),
-        h("div", { class: "profile-note" }, "За нового приглашённого пользователя: +2 ⭐. Звёзды нельзя вывести или обменять на деньги.")
+    // ---------- Экраны ----------
+    function btn(text, cls, fn, icon) {
+      return h("button", { class: "btn slot " + (cls || ""), onclick: fn }, icon ? pix(icon, 18) : null, text);
+    }
+
+    function show(id) {
+      for (const v of ["vCatalog", "vProfile", "vMsg"]) $(v).hidden = v !== id;
+    }
+
+    function showMsg(icon, title, text, buttons) {
+      state.view = "msg";
+      show("vMsg");
+      $("hotbar").hidden = true; $("fab").hidden = true; $("balChip").hidden = true;
+      $("vMsg").replaceChildren(h("div", { class: "msg slot" },
+        h("div", { class: "big" }, pix(icon, 56)),
+        h("h2", {}, title),
+        h("p", {}, text),
+        buttons || []
+      ));
+    }
+
+    function showGate(me) {
+      const extra = me && me.sub_error ? h("div", { class: "note warn slot sunk" }, h("b", {}, "Для админа: "), me.sub_error) : null;
+      showMsg("lock", "Сначала подпишись на канал",
+        "Каталог и бот доступны только подписчикам MineLine. Подпишись и вернись сюда — я проверю сам.",
+        [
+          btn("Подписаться на канал", "", () => openTg((me && me.channel) || "https://t.me/mineline_telegram")),
+          btn("Я подписался, проверить", "alt", async (e) => {
+            e.currentTarget.disabled = true;
+            await load(true);
+            if (state.me && !state.me.subscribed) toast("Подписка пока не видна. Подожди пару секунд и нажми ещё раз");
+          }),
+          extra,
+        ]
       );
     }
 
-    // ---------- Отрисовка ----------
-    function renderTabs() {
-      const box = document.getElementById("tabs");
-      box.replaceChildren(
-        ...CATS.map((c) =>
-          h("button", { class: "tab" + (c.id === state.cat ? " active" : ""), onclick: () => { state.cat = c.id; render(); } }, c.name)
-        )
-      );
+    function setView(v) {
+      state.view = v;
+      const me = state.me;
+      $("hotbar").hidden = false;
+      $("balChip").hidden = false;
+      $("balChip").replaceChildren(pix("star", 16), String((me.profile && me.profile.balance) || 0));
+      $("hbCatalog").replaceChildren(pix("chest", 26), "Каталог");
+      $("hbProfile").replaceChildren(pix("head", 26), "Профиль");
+      $("hbCatalog").classList.toggle("on", v === "catalog");
+      $("hbProfile").classList.toggle("on", v === "profile");
+      $("fab").hidden = !(me.admin && v === "catalog");
+      show(v === "catalog" ? "vCatalog" : "vProfile");
+      if (v === "catalog") renderCatalog(); else renderProfile();
+      window.scrollTo(0, 0);
     }
 
-    function card(item) {
-      const src = imgSrc(item);
-      const thumb = src
-        ? h("img", { class: "thumb", src, alt: "", loading: "lazy" })
-        : h("div", { class: "thumb ph", style: `background: linear-gradient(135deg, hsl(${(item.id * 67) % 360} 55% 45%), hsl(${(item.id * 67 + 50) % 360} 60% 30%))` }, catOf(item.category).icon);
-      return h("div", { class: "item", onclick: () => openItem(item) },
-        item.hidden ? h("div", { class: "badge-hidden" }, "скрыт") : null,
-        thumb,
-        h("div", { class: "info" },
-          h("div", { class: "name" }, item.title),
-          h("div", { class: "meta" },
-            h("span", { class: "price" + (item.price > 0 ? " paid" : "") }, priceLabel(item.price)),
-            h("span", {}, `↓ ${item.downloads || 0}`)
-          )
-        )
-      );
+    // ---------- Каталог ----------
+    function banners() {
+      const me = state.me; const out = [];
+      if (me.open) out.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Временный режим: "), "админ-права сейчас есть у всех. Скоро он отключится сам."));
+      if (!me.admin && tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id === OWNER_ID)
+        out.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Админка закрыта: "), me.why === "not_in_admin_list" ? "твой ID не в списке ADMIN_IDS на сервере." : authReason(me.why)));
+      $("banner").replaceChildren(...out);
     }
 
-    function render() {
-      renderTabs();
-      if (state.demo) {
-        document.getElementById("banner").replaceChildren(h("div", { class: "banner" }, "Демо-режим: сервер ещё не подключён, показаны примеры."));
-      }
+    function renderCatalog() {
+      banners();
+      $("tabs").replaceChildren(...CATS.map((c) =>
+        h("button", { class: "tab slot" + (c.id === state.cat ? " on" : ""), onclick: () => { state.cat = c.id; renderCatalog(); } }, pix(c.icon, 26), c.name)
+      ));
       const q = state.q.trim().toLowerCase();
       const list = state.items.filter((i) => i.category === state.cat && (!q || i.title.toLowerCase().includes(q) || (i.description || "").toLowerCase().includes(q)));
-      const grid = document.getElementById("grid");
-      grid.replaceChildren(...(list.length ? list.map(card) : [h("div", { class: "empty" }, q ? "Ничего не найдено" : "Пока здесь пусто")]));
+      $("grid").replaceChildren(...(list.length
+        ? list.map((it, idx) => card(it, idx === 0 && !q && (it.downloads || 0) > 0))
+        : [h("div", { class: "empty" }, pix("chest", 48), q ? "Ничего не нашлось. Попробуй другое слово." : "В этом разделе пока пусто.")]));
+    }
+
+    function cover(it, big) {
+      const src = imgSrc(it);
+      return src
+        ? h(big ? "img" : "img", { class: big ? "hero" : "thumb", src, alt: "", loading: "lazy" })
+        : h("div", { class: (big ? "hero" : "thumb") + " ph", "data-cat": it.category }, pix(catOf(it.category).icon, big ? 84 : 52));
+    }
+
+    function card(it, first) {
+      return h("button", { class: "card slot" + (first ? " top1" : ""), onclick: () => openItem(it) },
+        cover(it, false),
+        h("span", { class: "tag px" + (it.price > 0 ? " paid" : "") }, it.price > 0 ? it.price + " ★" : "FREE"),
+        it.hidden ? h("span", { class: "tag off" }, "скрыт") : null,
+        h("div", { class: "name" }, it.title),
+        h("div", { class: "dl" }, pix("down", 12), dlWord(it.downloads || 0))
+      );
+    }
+
+    // ---------- Профиль ----------
+    function renderProfile() {
+      const me = state.me; const p = me.profile;
+      const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+      const name = p.first_name || (tgUser && tgUser.first_name) || "Игрок";
+      const photo = tgUser && /^https:\/\//i.test(tgUser.photo_url || "") ? tgUser.photo_url : "";
+      const link = p.ref_link;
+      const root = $("vProfile");
+
+      const kids = [
+        h("div", { class: "pad" },
+          h("div", { class: "me slot" },
+            h("div", { class: "ava" }, photo ? h("img", { src: photo, alt: "" }) : pix("head", 40)),
+            h("div", {}, h("h2", {}, name), h("p", {}, (p.username ? "@" + p.username + " · " : "") + "ID " + p.id))
+          ),
+          h("div", { class: "bal slot" },
+            h("div", { class: "lab" }, "Твой баланс"),
+            h("div", { class: "num" }, pix("star", 30), String(p.balance)),
+            h("div", { class: "fine" }, "Звёзды копятся только внутри приложения. Вывести их нельзя.")
+          ),
+          h("div", { class: "stats" },
+            stat(p.refs, "друзей"),
+            stat("+" + p.earned, "заработано"),
+            stat(p.pending, "ждут подписки")
+          ),
+          h("div", { class: "sec" }, "Приглашай друзей"),
+          h("p", { class: "how" }, `За каждого друга, который откроет бота по твоей ссылке и подпишется на канал, ты получаешь +${p.reward} ★.`),
+          h("div", { class: "link slot sunk" }, link || "Ссылка появится, когда администратор настроит бота"),
+          link ? h("div", { class: "two" },
+            btn("Копировать", "alt", async () => {
+              try { await navigator.clipboard.writeText(link); toast("Ссылка скопирована"); haptic("success"); }
+              catch (e) { toast("Не получилось. Выдели ссылку и скопируй вручную"); }
+            }),
+            btn("Поделиться", "", () => openTg("https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("FlexMarket — ресурс паки, конфиги и шейдеры для Minecraft")))
+          ) : null,
+        ),
+      ];
+      const pad2 = h("div", { class: "pad" });
+      if (p.recent && p.recent.length) {
+        pad2.append(h("div", { class: "sec" }, "Твои друзья"),
+          h("div", { class: "friends slot" }, p.recent.map((n) => h("div", { class: "friend" }, pix("head", 20), h("span", {}, n), h("span", {}, "+" + p.reward + " ★")))));
+      }
+      if (me.listed) {
+        pad2.append(h("div", { class: "sec" }, "Для администратора"),
+          h("div", { class: "how" }, "Если бот не отвечает в чате или не пускает по подписке, нажми «Настроить бота». Он сам включит команды, меню и проверит доступ к каналу."),
+          btn("Настроить бота", "alt", () => withAdmin(setupBot), "gear"));
+        if (me.sub_error) pad2.append(h("div", { class: "note warn slot sunk" }, h("b", {}, "Проверка подписки не работает: "), me.sub_error));
+      }
+      root.replaceChildren(...kids, pad2);
+    }
+    function stat(v, l) { return h("div", { class: "st slot" }, h("div", { class: "v" }, String(v)), h("div", { class: "l" }, l)); }
+
+    async function setupBot() {
+      try {
+        const r = await api("/api/admin/setup-bot", { method: "POST" });
+        const lines = (r.errors || []).map((e) => h("li", {}, e));
+        openSheet(h("div", { class: "body" },
+          h("h2", {}, r.ok ? "Бот настроен" : "Бот настроен не полностью"),
+          r.username ? h("p", { class: "how" }, "Бот: @" + r.username) : null,
+          lines.length ? h("ul", { class: "res" }, lines) : h("p", { class: "how" }, "Команды, меню и вебхук включены. Открой бота и отправь /start."),
+          btn("Понятно", "alt", () => closeSheet && closeSheet())
+        ));
+        await refreshMe();
+      } catch (e) { toast(adminErr(e)); }
+    }
+
+    async function refreshMe() {
+      try { state.me = await api("/api/me"); if (state.view === "profile") renderProfile(); $("balChip").replaceChildren(pix("star", 16), String((state.me.profile && state.me.profile.balance) || 0)); } catch (e) {}
     }
 
     // ---------- Окна ----------
     let closeSheet = null;
-
     function openSheet(content) {
       if (closeSheet) closeSheet();
       const overlay = h("div", { class: "overlay", onclick: (e) => { if (e.target === overlay) close(); } }, h("div", { class: "sheet" }, content));
@@ -346,114 +506,128 @@
       function close() {
         overlay.remove();
         document.body.style.overflow = "";
-        if (tg && tg.BackButton) { tg.BackButton.hide(); tg.BackButton.offClick(onBack); }
+        if (tg && tg.BackButton) { try { tg.BackButton.hide(); tg.BackButton.offClick(onBack); } catch (e) {} }
         closeSheet = null;
       }
-      if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(onBack); }
+      if (tg && tg.BackButton) { try { tg.BackButton.show(); tg.BackButton.onClick(onBack); } catch (e) {} }
       closeSheet = close;
       return close;
     }
 
-    function openItem(item) {
-      const src = imgSrc(item);
-      const hero = src
-        ? h("img", { class: "hero", src, alt: "" })
-        : h("div", { class: "hero ph", style: `font-size:64px; background: linear-gradient(135deg, hsl(${(item.id * 67) % 360} 55% 45%), hsl(${(item.id * 67 + 50) % 360} 60% 30%))` }, catOf(item.category).icon);
-
-      const link = safeUrl(item.link);
+    function openItem(it) {
+      const link = safeUrl(it.link);
       let action;
-      if (item.price > 0) {
-        action = h("button", { class: "btn", onclick: () => buy(item) }, `Купить за ${item.price} ⭐`);
-      } else if (link) {
-        action = h("button", { class: "btn", onclick: () => download(item, link) }, "Скачать");
-      } else {
-        action = h("button", { class: "btn", disabled: true }, "Ссылка пока не добавлена");
-      }
+      if (it.price > 0) action = btn(`Купить за ${it.price} ★`, "", () => buy(it), "star");
+      else if (link) action = btn("Скачать", "", () => download(it, link), "down");
+      else action = h("button", { class: "btn slot", disabled: true }, "Ссылка пока не добавлена");
 
-      const adminBox = state.admin && !state.demo
-        ? h("div", { class: "admin-row" },
-            h("button", { class: "btn ghost", onclick: () => openEditor(item) }, "Изменить"),
-            h("button", { class: "btn ghost", onclick: () => toggleHidden(item) }, item.hidden ? "Показать" : "Скрыть"),
-            h("button", { class: "btn danger", onclick: () => remove(item) }, "Удалить")
-          )
+      const admin = state.me.admin
+        ? h("div", { class: "three" },
+            btn("Изменить", "alt", () => withAdmin(() => openEditor(it))),
+            btn(it.hidden ? "Показать" : "Скрыть", "alt", () => withAdmin(() => toggleHidden(it))),
+            btn("Удалить", "red", () => withAdmin(() => remove(it))))
         : null;
 
       openSheet([
-        hero,
+        cover(it, true),
         h("div", { class: "body" },
-          h("h2", {}, item.title),
-          h("div", { class: "row" },
-            h("span", { class: "price" + (item.price > 0 ? " paid" : "") }, priceLabel(item.price)),
-            h("span", {}, catOf(item.category).name),
-            h("span", {}, `↓ ${item.downloads || 0}`)
+          h("h2", {}, it.title),
+          h("div", { class: "chips" },
+            h("span", { class: "slot px", style: "font-size:10px;color:" + (it.price > 0 ? "var(--gold)" : "var(--free)") }, it.price > 0 ? it.price + " ★" : "FREE"),
+            h("span", { class: "slot" }, pix(catOf(it.category).icon, 16), catOf(it.category).name),
+            h("span", { class: "slot" }, pix("down", 14), `${it.downloads || 0}`)
           ),
-          item.description ? h("div", { class: "desc" }, item.description) : h("div", { class: "desc" }),
-          action,
-          adminBox
+          it.description ? h("div", { class: "desc" }, it.description) : null,
+          action, admin
         ),
       ]);
     }
 
-    function openLink(url) {
-      if (tg && tg.openLink) tg.openLink(url);
-      else window.open(url, "_blank");
-    }
-
-    function download(item, link) {
-      if (!state.demo) api(`/api/items/${item.id}/download`, { method: "POST" }).catch(() => {});
-      item.downloads = (item.downloads || 0) + 1;
+    function download(it, link) {
+      api(`/api/items/${it.id}/download`, { method: "POST" }).catch(() => {});
+      it.downloads = (it.downloads || 0) + 1;
+      sortItems(state.items);
       openLink(link);
-      render();
+      renderCatalog();
     }
 
-    function buy(item) {
-      if (!CONTACT) { toast("Контакт продавца пока не указан"); return; }
-      const url = `https://t.me/${CONTACT}`;
-      if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
-      else window.open(url, "_blank");
+    function buy(it) {
+      if (!CONTACT) { toast("Покупка за звёзды скоро появится"); return; }
+      openTg(`https://t.me/${CONTACT}`);
     }
 
-    // ---------- Админка ----------
-    async function toggleHidden(item) {
+    // ---------- Админ-код ----------
+    function adminErr(e) {
+      if (e.code === "bad_code") return "Неверный код";
+      if (e.code === "locked") return `Слишком много попыток. Подожди ${Math.ceil((e.retry || 900) / 60)} мин.`;
+      if (e.code === "no_admin_code") return "На сервере не задан админ-код";
+      if (e.code === "forbidden") return "Нет прав администратора";
+      return "Не получилось: " + e.message;
+    }
+
+    // Любое админ-действие сначала просит код (он хранится только в памяти до закрытия приложения)
+    function withAdmin(fn) {
+      if (state.adminCode) { fn(); return; }
+      const input = h("input", { type: "password", autocomplete: "off", placeholder: "Админ-код", autocapitalize: "off", spellcheck: "false" });
+      const err = h("div", { class: "err" });
+      const ok = btn("Подтвердить", "", async () => {
+        const code = input.value.trim();
+        if (!code) { err.textContent = "Введи код"; return; }
+        ok.disabled = true; err.textContent = "";
+        try {
+          await api("/api/admin/check", { code });
+          state.adminCode = code;
+          haptic("success");
+          closeSheet && closeSheet();
+          fn();
+        } catch (e) { ok.disabled = false; err.textContent = adminErr(e); haptic("error"); }
+      });
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") ok.click(); });
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Нужен админ-код"),
+        h("p", { class: "how" }, "Это защита от случайных нажатий и чужих рук. Код знает только владелец."),
+        h("label", { class: "field slot sunk", style: "margin:0;padding:0;color:inherit" }, input),
+        err, ok
+      ));
+      setTimeout(() => input.focus(), 250);
+    }
+
+    // ---------- Действия админа ----------
+    async function toggleHidden(it) {
       try {
-        await api(`/api/admin/items/${item.id}`, { method: "PUT", body: JSON.stringify({ ...item, hidden: !item.hidden }) });
-        toast(item.hidden ? "Товар показан" : "Товар скрыт");
+        await api(`/api/admin/items/${it.id}`, { method: "PUT", body: JSON.stringify({ category: it.category, title: it.title, description: it.description, price: it.price, link: it.link, hidden: !it.hidden }) });
+        toast(it.hidden ? "Товар показан" : "Товар скрыт");
         closeSheet && closeSheet();
         await load();
-      } catch (e) { toast("Не получилось: " + e.message); }
+      } catch (e) { toast(adminErr(e)); }
     }
 
-    async function remove(item) {
-      const ok = tg && tg.showConfirm
-        ? await new Promise((res) => tg.showConfirm(`Удалить «${item.title}»?`, res))
-        : confirm(`Удалить «${item.title}»?`);
+    async function remove(it) {
+      const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm(`Удалить «${it.title}»?`, res)) : confirm(`Удалить «${it.title}»?`);
       if (!ok) return;
       try {
-        await api(`/api/admin/items/${item.id}`, { method: "DELETE" });
+        await api(`/api/admin/items/${it.id}`, { method: "DELETE" });
         toast("Удалено");
         closeSheet && closeSheet();
         await load();
-      } catch (e) { toast("Не получилось: " + e.message); }
+      } catch (e) { toast(adminErr(e)); }
     }
 
-    // Сжатие картинки: до 900 px по большей стороне, WebP (или JPEG)
+    // Сжатие картинки: до 900 px, WebP (или JPEG), не больше ~600 000 символов
     function compressImage(file) {
       return new Promise((resolve, reject) => {
         const url = URL.createObjectURL(file);
         const img = new Image();
         img.onload = () => {
-          const max = 900;
-          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          const scale = Math.min(1, 900 / Math.max(img.width, img.height));
           const canvas = document.createElement("canvas");
           canvas.width = Math.round(img.width * scale);
           canvas.height = Math.round(img.height * scale);
           canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
           URL.revokeObjectURL(url);
-          let type = "image/webp";
-          let q = 0.82;
+          let type = "image/webp", q = 0.82;
           let data = canvas.toDataURL(type, q);
           if (!data.startsWith("data:image/webp")) { type = "image/jpeg"; data = canvas.toDataURL(type, q); }
-          // сервер принимает до ~700 000 символов: при необходимости сжимаем сильнее
           while (data.length > 600000 && q > 0.35) { q -= 0.1; data = canvas.toDataURL(type, q); }
           resolve(data);
         };
@@ -464,22 +638,14 @@
 
     function openEditor(item) {
       const isNew = !item;
-      const draft = {
-        category: item ? item.category : state.cat,
-        title: item ? item.title : "",
-        description: item ? item.description : "",
-        price: item ? item.price : 0,
-        link: item ? item.link : "",
-        hidden: item ? item.hidden : false,
-      };
+      const d = { category: item ? item.category : state.cat, title: item ? item.title : "", description: item ? item.description : "", price: item ? item.price : 0, link: item ? item.link : "", hidden: item ? item.hidden : false };
       let newImage; // undefined — не менять, null — удалить, строка — новая
-      const preview = h("div", { class: "imgpick" });
-      // Прозрачное поле выбора файла лежит поверх рамки: нажатие попадает прямо в него (надёжнее, чем click() из кода)
+      const preview = h("div", { class: "imgpick slot sunk" });
+      // Прозрачное поле выбора файла лежит поверх рамки: нажатие попадает прямо в него
       const fileInput = h("input", { type: "file", accept: "image/*", style: "position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;" });
-
       function paintPreview() {
         const src = newImage ? newImage : newImage === null ? "" : item ? imgSrc(item) : "";
-        preview.replaceChildren(src ? h("img", { src, alt: "" }) : h("span", {}, "🖼️ Выбрать картинку"), fileInput);
+        preview.replaceChildren(src ? h("img", { src, alt: "" }) : h("span", {}, "Нажми, чтобы выбрать картинку"), fileInput);
       }
       paintPreview();
       fileInput.addEventListener("change", async () => {
@@ -490,25 +656,15 @@
         fileInput.value = "";
       });
 
-      const category = h("select", {}, CATS.map((c) => h("option", { value: c.id, selected: c.id === draft.category }, c.name)));
-      const title = h("input", { type: "text", maxlength: "80", value: draft.title, placeholder: "Название" });
-      const desc = h("textarea", { maxlength: "600", placeholder: "Описание" });
-      desc.value = draft.description;
-      const price = h("input", { type: "number", min: "0", step: "1", inputmode: "numeric", value: String(draft.price) });
-      const link = h("input", { type: "url", value: draft.link, placeholder: "https://… (Яндекс Диск, Mega, Google Drive)" });
-      const hidden = h("input", { type: "checkbox" });
-      hidden.checked = draft.hidden;
-      const saveBtn = h("button", { class: "btn" }, isNew ? "Добавить" : "Сохранить");
-
-      saveBtn.addEventListener("click", async () => {
-        const body = {
-          category: category.value,
-          title: title.value.trim(),
-          description: desc.value.trim(),
-          price: Math.max(0, Math.floor(Number(price.value) || 0)),
-          link: link.value.trim(),
-          hidden: hidden.checked,
-        };
+      const field = (el) => h("label", { class: "field slot sunk", style: "margin:0;padding:0;color:inherit" }, el);
+      const category = h("select", {}, CATS.map((c) => h("option", { value: c.id, selected: c.id === d.category }, c.name)));
+      const title = h("input", { type: "text", maxlength: "80", value: d.title, placeholder: "Название" });
+      const desc = h("textarea", { maxlength: "600", placeholder: "Описание" }); desc.value = d.description;
+      const price = h("input", { type: "number", min: "0", step: "1", inputmode: "numeric", value: String(d.price) });
+      const link = h("input", { type: "url", value: d.link, placeholder: "https://… (Яндекс Диск, Mega, Google Drive)" });
+      const hidden = h("input", { type: "checkbox" }); hidden.checked = d.hidden;
+      const saveBtn = btn(isNew ? "Добавить" : "Сохранить", "", async () => {
+        const body = { category: category.value, title: title.value.trim(), description: desc.value.trim(), price: Math.max(0, Math.floor(Number(price.value) || 0)), link: link.value.trim(), hidden: hidden.checked };
         if (!body.title) { toast("Введи название"); return; }
         if (body.link && !safeUrl(body.link)) { toast("Ссылка должна начинаться с https://"); return; }
         if (newImage !== undefined) body.image = newImage;
@@ -523,58 +679,40 @@
           await load();
         } catch (e) {
           saveBtn.disabled = false;
-          toast("Не получилось: " + e.message);
+          toast(adminErr(e));
+          if (e.code === "bad_code") { closeSheet && closeSheet(); withAdmin(() => openEditor(item)); }
         }
       });
+      const removeImg = !isNew && item.has_image ? btn("Убрать картинку", "alt", () => { newImage = null; paintPreview(); }) : null;
 
-      const removeImg = !isNew && item.has_image
-        ? h("button", { class: "btn ghost", onclick: () => { newImage = null; paintPreview(); } }, "Убрать картинку")
-        : null;
-
-      openSheet(
-        h("div", { class: "body" },
-          h("h2", {}, isNew ? "Новый товар" : "Редактирование"),
-          h("label", {}, "Картинка (нажми на рамку, чтобы выбрать)"), preview, removeImg,
-          h("label", {}, "Раздел"), category,
-          h("label", {}, "Название"), title,
-          h("label", {}, "Описание"), desc,
-          h("label", {}, "Цена в звёздах (0 = бесплатно)"), price,
-          h("label", {}, "Ссылка на файл"), link,
-          h("label", { class: "check" }, hidden, h("span", {}, "Скрыть из каталога")),
-          saveBtn
-        )
-      );
-    }
-
-    function openAdminGate() {
-      if (state.adminCode) { openEditor(null); return; }
-      const code = h("input", { type: "password", autocomplete: "off", placeholder: "Введите админ-код" });
-      const submit = h("button", { class: "btn" }, "Подтвердить");
-      submit.addEventListener("click", async () => {
-        submit.disabled = true;
-        try {
-          await api("/api/admin/unlock", { method: "POST", body: JSON.stringify({ code: code.value }) });
-          state.adminCode = code.value;
-          haptic("success");
-          toast("Доступ к добавлению открыт");
-          closeSheet && closeSheet();
-          openEditor(null);
-        } catch (e) {
-          submit.disabled = false;
-          toast(e.message === "bad_admin_code" ? "Неверный админ-код" : e.message === "admin_code_not_configured" ? "Админ-код ещё не настроен на сервере" : "Не удалось проверить код");
-        }
-      });
       openSheet(h("div", { class: "body" },
-        h("h2", {}, "🔐 Доступ администратора"),
-        h("div", { class: "desc" }, "Для добавления товара введи админ-код."),
-        h("label", {}, "Админ-код"), code, submit
+        h("h2", {}, isNew ? "Новый товар" : "Редактирование"),
+        h("label", {}, "Картинка"), preview, removeImg,
+        h("label", {}, "Раздел"), field(category),
+        h("label", {}, "Название"), field(title),
+        h("label", {}, "Описание"), field(desc),
+        h("label", {}, "Цена в звёздах (0 — бесплатно)"), field(price),
+        h("label", {}, "Ссылка на файл"), field(link),
+        h("label", { class: "check" }, hidden, h("span", {}, "Скрыть из каталога")),
+        saveBtn
       ));
     }
 
     // ---------- События ----------
-    document.getElementById("search").addEventListener("input", (e) => { state.q = e.target.value; render(); });
-    document.getElementById("fab").addEventListener("click", () => openAdminGate());
+    $("logo").append(pix("cube", 24));
+    $("fab").append(pix("plus", 26));
+    $("search").addEventListener("input", (e) => { state.q = e.target.value; renderCatalog(); });
+    $("fab").addEventListener("click", () => withAdmin(() => openEditor(null)));
+    $("hbCatalog").addEventListener("click", () => { if (state.view !== "catalog") setView("catalog"); });
+    $("hbProfile").addEventListener("click", async () => { if (state.view !== "profile") { setView("profile"); await refreshMe(); } });
+    // Вернулся из канала — проверяем подписку сам
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (state.view === "msg" && state.me && state.me.auth && !state.me.subscribed) load(true);
+      else if (state.view === "profile") refreshMe();
+    });
 
+    showMsg("cube", "Загружаю…", "Подожди секунду.");
     load();
   </script>
 </body>

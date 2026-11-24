@@ -1,17 +1,25 @@
-// Серверная часть каталога: Cloudflare Worker + база D1.
-// Переменные, которые нужно задать в Cloudflare:
-//   BOT_TOKEN  — токен бота (секрет)
-//   ADMIN_IDS  — Telegram ID админов через запятую, например: 123456789
-// Привязка базы D1 должна называться DB.
+// Серверная часть FlexMarket (Cloudflare Worker + база D1):
+// каталог, обязательная подписка на канал, профиль, рефералы и сам Telegram-бот.
+//
+// Нужно в Cloudflare:
+//   BOT_TOKEN  — токен бота (Secret)
+//   ADMIN_IDS  — Telegram ID админов через запятую
+//   привязка базы D1 с именем DB
 
 const ALLOWED_ORIGIN = "https://flexpelmen.github.io";
+const WEBAPP_URL = "https://flexpelmen.github.io/mybot/";
+const WORKER_URL = "https://mybot.fleexis123.workers.dev";
+const CHANNEL = "@mineline_telegram";
+const CHANNEL_URL = "https://t.me/mineline_telegram";
+const REF_REWARD = 2; // звёзд за каждого приглашённого друга
+const SUB_OK_CACHE = 600; // сколько секунд помним, что человек подписан
+const SUB_NO_CACHE = 15; // сколько секунд помним, что подписки нет
 const CATEGORIES = ["resourcepacks", "configs", "shaders"];
 const MAX_IMAGE_CHARS = 700000;
 
 let schemaReady = false;
-let telegramSetupPromise = null;
-let cachedBotUsername = "";
-const subscriptionCache = new Map();
+let botUsername = null;
+const negCache = new Map(); // userId -> { until, at, error }
 
 export default {
   async fetch(request, env) {
@@ -35,59 +43,60 @@ async function route(request, env, cors) {
   const method = request.method;
 
   if (path === "/" || path === "/api/health") {
-    let bot = { configured: !!env.BOT_TOKEN, ready: false };
-    try {
-      const setup = await ensureTelegramBot(env);
-      bot = {
-        configured: true,
-        ready: true,
-        username: setup.username || "",
-        webhook_url: setup.webhook_url,
-        setup: setup.already_configured ? "already_configured" : "configured"
-      };
-    } catch (err) {
-      console.error("bot_diagnostics_failed", err);
-      bot.configured = !!env.BOT_TOKEN;
-      bot.error = String(err?.message || "telegram_api_error");
-    }
-    return json({ ok: true, bot_ready: !!bot.ready, bot }, 200, cors);
-  }
-
-  // Telegram bot webhook
-  if (path === "/telegram/webhook" && method === "POST") {
-    const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
-    if (!safeEqual(secret, await deriveWebhookSecret(env))) {
-      return json({ error: "webhook_forbidden" }, 403, cors);
-    }
-    const update = await readJson(request);
-    await handleTelegramUpdate(update, env);
     return json({ ok: true }, 200, cors);
   }
 
-  // Telegram Mini App authentication and access gate
-  const { user, why } = await getAuth(request, env);
-  const listed = !!user && isAdminId(user.id, env);
-  const isAdmin = listed;
-
-  if (path === "/api/me" && method === "GET") {
-    if (!user) return json({ authenticated: false, subscribed: false, admin: false, why }, 200, cors);
-    const subscribed = await isSubscribed(user.id, env);
-    if (!subscribed) return json({ authenticated: true, subscribed: false, admin: isAdmin, channel: "https://t.me/mineline_telegram" }, 200, cors);
-    await saveUser(user, env);
-    const profile = await getProfile(user.id, env);
-    const botUsername = await getBotUsername(env);
-    return json({ authenticated: true, subscribed: true, admin: isAdmin, user: profile, bot_username: botUsername }, 200, cors);
+  // ---------- Вебхук Telegram (бот) ----------
+  if (path === "/tg" && method === "POST") {
+    const secret = await webhookSecret(env);
+    const got = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (!secret || !safeEqual(got, secret)) return new Response("forbidden", { status: 403 });
+    let update = null;
+    try {
+      update = await request.json();
+    } catch {}
+    try {
+      if (update) await handleUpdate(env, update);
+    } catch (e) {
+      console.error("update failed", e);
+    }
+    return new Response("ok");
   }
 
-  const isImageRequest = /^\/api\/img\/\d+$/.test(path);
-  if (!user && !isImageRequest) return json({ error: "auth_required" }, 401, cors);
-  const subscribed = user ? await isSubscribed(user.id, env) : true;
-  if (!subscribed) return json({ error: "subscription_required", channel: "https://t.me/mineline_telegram" }, 403, cors);
-  if (user) await saveUser(user, env);
+  // ---------- Кто пользуется приложением ----------
+  const auth = await getAuth(request, env);
+  const { user, why } = auth;
+  const listed = !!user && isAdminId(user.id, env);
+  // Временный открытый режим админки: до момента OPEN_ADMIN_UNTIL (unix, секунды) админ — любой
+  const open = Date.now() / 1000 < Number(env.OPEN_ADMIN_UNTIL || 0);
+  const isAdmin = open || listed;
+
+  if (path === "/api/me" && method === "GET") {
+    const out = {
+      auth: !!user,
+      admin: isAdmin,
+      listed,
+      open,
+      why: listed ? "ok" : why === "ok" ? "not_in_admin_list" : why,
+      channel: CHANNEL_URL,
+      subscribed: false,
+      profile: null,
+    };
+    if (user) {
+      await upsertUser(env, user, parseRef(auth.startParam));
+      const sub = await isSubscribed(env, user.id, url.searchParams.get("check") === "1");
+      if (sub.ok && sub.fresh) await settleReferral(env, user.id);
+      out.subscribed = listed || sub.ok;
+      if (listed && sub.error) out.sub_error = sub.error;
+      if (out.subscribed) out.profile = await getProfile(env, user);
+    }
+    return json(out, 200, cors);
+  }
 
   if (path === "/api/items" && method === "GET") {
+    if (!(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
     const rows = await env.DB.prepare(
-      "SELECT id, category, title, description, price, link, hidden, downloads, updated_at, (image != '') AS has_image FROM items ORDER BY id DESC"
+      "SELECT id, category, title, description, price, link, hidden, downloads, updated_at, (image != '') AS has_image FROM items ORDER BY downloads DESC, id DESC"
     ).all();
     const items = rows.results
       .filter((r) => isAdmin || !r.hidden)
@@ -97,8 +106,8 @@ async function route(request, env, cors) {
         title: r.title,
         description: r.description,
         price: r.price,
-        // ссылка на платный товар видна только админу
-        link: r.price === 0 || isAdmin ? r.link : "",
+        // ссылка на платный товар видна только настоящему админу
+        link: r.price === 0 || listed ? r.link : "",
         hidden: !!r.hidden,
         downloads: r.downloads,
         has_image: !!r.has_image,
@@ -110,9 +119,7 @@ async function route(request, env, cors) {
   let m = path.match(/^\/api\/img\/(\d+)$/);
   if (m && method === "GET") {
     // Картинки отдаются без проверки: тег <img> не может передать подпись Telegram
-    const row = await env.DB.prepare("SELECT image FROM items WHERE id = ?")
-      .bind(Number(m[1]))
-      .first();
+    const row = await env.DB.prepare("SELECT image FROM items WHERE id = ?").bind(Number(m[1])).first();
     if (!row || !row.image) {
       return new Response("Not found", { status: 404, headers: cors });
     }
@@ -132,29 +139,24 @@ async function route(request, env, cors) {
 
   m = path.match(/^\/api\/items\/(\d+)\/download$/);
   if (m && method === "POST") {
-    await env.DB.prepare("UPDATE items SET downloads = downloads + 1 WHERE id = ?")
-      .bind(Number(m[1]))
-      .run();
+    if (!(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    await env.DB.prepare("UPDATE items SET downloads = downloads + 1 WHERE id = ?").bind(Number(m[1])).run();
     return json({ ok: true }, 200, cors);
   }
 
-  // ---------- Только для админа + дополнительный код ----------
+  // ---------- Только для админа ----------
   if (path.startsWith("/api/admin/")) {
     if (!isAdmin) return json({ error: "forbidden" }, 403, cors);
-    if (path === "/api/admin/unlock" && method === "POST") {
-      const body = await readJson(request);
-      if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
-      if (!safeEqual(String(body?.code || ""), String(env.ADMIN_CODE))) return json({ error: "bad_admin_code" }, 403, cors);
-      let webhook = false;
-      try {
-        await ensureTelegramBot(env);
-        webhook = true;
-      } catch (err) { console.error("bot_setup_failed", err); }
-      return json({ ok: true, webhook }, 200, cors);
-    }
-    if (!env.ADMIN_CODE) return json({ error: "admin_code_not_configured" }, 503, cors);
-    if (!safeEqual(request.headers.get("X-Admin-Code") || "", String(env.ADMIN_CODE))) {
-      return json({ error: "admin_code_required" }, 403, cors);
+
+    // Любое админ-действие требует код администратора (проверяется здесь, а не только в интерфейсе)
+    const gate = await adminCodeGate(env, request, user);
+    if (!gate.ok) return json({ error: gate.error, retry: gate.retry }, gate.status, cors);
+
+    if (path === "/api/admin/check" && method === "GET") return json({ ok: true }, 200, cors);
+
+    if (path === "/api/admin/setup-bot" && method === "POST") {
+      if (!listed) return json({ error: "forbidden" }, 403, cors);
+      return json(await setupBot(env), 200, cors);
     }
 
     if (path === "/api/admin/items" && method === "POST") {
@@ -219,7 +221,7 @@ async function route(request, env, cors) {
   return json({ error: "not_found" }, 404, cors);
 }
 
-// ---------- Проверка данных ----------
+// ---------- Проверка данных товара ----------
 
 function validateItem(b, isUpdate) {
   if (!b || typeof b !== "object") return { error: "bad_body" };
@@ -261,8 +263,8 @@ async function getAuth(request, env) {
   const auth = request.headers.get("Authorization") || "";
   if (!env.BOT_TOKEN) return { user: null, why: "no_bot_token" };
   if (!auth.startsWith("tma ")) return { user: null, why: "no_initdata" };
-  const user = await verifyInitData(auth.slice(4), env.BOT_TOKEN);
-  return user ? { user, why: "ok" } : { user: null, why: "bad_signature" };
+  const res = await verifyInitData(auth.slice(4), env.BOT_TOKEN);
+  return res ? { user: res.user, startParam: res.startParam, why: "ok" } : { user: null, why: "bad_signature" };
 }
 
 function isAdminId(id, env) {
@@ -289,9 +291,7 @@ async function verifyInitData(initData, botToken) {
   const hmacKey = (keyData) =>
     crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 
-  // Telegram Web Apps validation:
-  // secret_key = HMAC_SHA256(key="WebAppData", message=bot_token)
-  // hash = HMAC_SHA256(key=secret_key, message=data_check_string)
+  // По документации Telegram: ключ — строка "WebAppData", сообщение — токен бота
   const secret = await crypto.subtle.sign("HMAC", await hmacKey(enc.encode("WebAppData")), enc.encode(botToken));
   const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), enc.encode(dataCheckString));
   const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -303,7 +303,9 @@ async function verifyInitData(initData, botToken) {
   if (!Number.isFinite(authDate) || authDate > now + 60 || now - authDate > 86400) return null;
 
   try {
-    return JSON.parse(params.get("user"));
+    const user = JSON.parse(params.get("user"));
+    if (!user || typeof user.id !== "number") return null;
+    return { user, startParam: params.get("start_param") || "" };
   } catch {
     return null;
   }
@@ -316,22 +318,388 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+// ---------- Код администратора ----------
+// В настройках хранится только хэш (ADMIN_CODE_HASH). Можно вместо него задать секрет ADMIN_CODE.
+// Если ни того ни другого нет, админка закрыта для всех.
+
+const CODE_MAX_FAILS = 5; // неверных попыток подряд
+const CODE_LOCK_SEC = 900; // блокировка на 15 минут
+
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const codeHash = (code) => sha256Hex("flexmarket-admin-code:" + code);
+
+async function adminCodeGate(env, request, user) {
+  const expected = env.ADMIN_CODE_HASH ? String(env.ADMIN_CODE_HASH) : env.ADMIN_CODE ? await codeHash(String(env.ADMIN_CODE)) : "";
+  if (!expected) return { ok: false, status: 403, error: "no_admin_code" };
+
+  const key = user ? "u" + user.id : "ip" + (request.headers.get("CF-Connecting-IP") || "?");
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare("SELECT fails, lock_until FROM admin_attempts WHERE k = ?").bind(key).first();
+  if (row && row.lock_until > now) return { ok: false, status: 429, error: "locked", retry: row.lock_until - now };
+
+  const given = request.headers.get("X-Admin-Code") || "";
+  if (given && given.length <= 200 && safeEqual(await codeHash(given), expected)) {
+    if (row) await env.DB.prepare("DELETE FROM admin_attempts WHERE k = ?").bind(key).run();
+    return { ok: true };
+  }
+  if (given) {
+    const fails = (row ? row.fails : 0) + 1;
+    const lock = fails >= CODE_MAX_FAILS;
+    await env.DB.prepare(
+      "INSERT INTO admin_attempts (k, fails, lock_until) VALUES (?, ?, ?) ON CONFLICT(k) DO UPDATE SET fails = excluded.fails, lock_until = excluded.lock_until"
+    )
+      .bind(key, lock ? 0 : fails, lock ? now + CODE_LOCK_SEC : 0)
+      .run();
+    if (lock) return { ok: false, status: 429, error: "locked", retry: CODE_LOCK_SEC };
+  }
+  return { ok: false, status: 403, error: "bad_code" };
+}
+
+// ---------- Пользователи, подписка, рефералы ----------
+
+function parseRef(value) {
+  const m = /^ref_(\d{1,15})$/.exec(String(value || ""));
+  return m ? Number(m[1]) : null;
+}
+
+async function upsertUser(env, u, refId) {
+  const now = Math.floor(Date.now() / 1000);
+  const name = String(u.first_name || u.username || "Игрок").slice(0, 64);
+  const uname = String(u.username || "").slice(0, 64);
+  let referrer = null;
+  // Реферал засчитывается только новому пользователю и только от существующего, не от самого себя
+  if (refId && refId !== u.id) {
+    const exists = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(u.id).first();
+    if (!exists) {
+      const r = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(refId).first();
+      if (r) referrer = refId;
+    }
+  }
+  await env.DB.prepare(
+    "INSERT INTO users (id, first_name, username, referrer_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username"
+  )
+    .bind(u.id, name, uname, referrer, now)
+    .run();
+}
+
+async function tg(env, method, body) {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false, description: "network_error" };
+  }
+}
+
+async function botName(env) {
+  if (botUsername) return botUsername;
+  const r = await tg(env, "getMe");
+  if (r.ok) botUsername = r.result.username;
+  return botUsername;
+}
+
+// Подписан ли человек на канал. Результат «подписан» помним 10 минут, «не подписан» — 15 секунд.
+async function isSubscribed(env, userId, force) {
+  const now = Math.floor(Date.now() / 1000);
+  const neg = negCache.get(userId);
+  if (!force) {
+    const row = await env.DB.prepare("SELECT sub_until FROM users WHERE id = ?").bind(userId).first();
+    if (row && row.sub_until > now) return { ok: true, fresh: false, error: null };
+    if (neg && neg.until > now) return { ok: false, fresh: false, error: neg.error };
+  } else if (neg && now - neg.at < 3) {
+    return { ok: false, fresh: false, error: neg.error }; // не чаще раза в 3 секунды
+  }
+
+  const r = await tg(env, "getChatMember", { chat_id: CHANNEL, user_id: userId });
+  if (!r.ok) {
+    const error = r.description || "telegram_error";
+    if (negCache.size > 2000) negCache.clear();
+    negCache.set(userId, { until: now + SUB_NO_CACHE, at: now, error });
+    return { ok: false, fresh: true, error };
+  }
+  const st = r.result.status;
+  const ok = st === "creator" || st === "administrator" || st === "member" || (st === "restricted" && r.result.is_member === true);
+  if (ok) {
+    negCache.delete(userId);
+    await env.DB.prepare("UPDATE users SET sub_until = ? WHERE id = ?").bind(now + SUB_OK_CACHE, userId).run();
+  } else {
+    if (negCache.size > 2000) negCache.clear();
+    negCache.set(userId, { until: now + SUB_NO_CACHE, at: now, error: null });
+  }
+  return { ok, fresh: true, error: null };
+}
+
+// Доступ к каталогу: настоящий админ или подписчик канала
+async function canView(env, user, listed) {
+  if (!user) return false;
+  if (listed) return true;
+  const sub = await isSubscribed(env, user.id, false);
+  if (sub.ok && sub.fresh) await settleReferral(env, user.id);
+  return sub.ok;
+}
+
+// Начисляет награду пригласившему ровно один раз, когда приглашённый подтвердил подписку
+async function settleReferral(env, userId) {
+  const row = await env.DB.prepare("SELECT referrer_id, ref_rewarded, first_name FROM users WHERE id = ?").bind(userId).first();
+  if (!row || !row.referrer_id || row.ref_rewarded) return false;
+  const res = await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE users SET balance = balance + ? WHERE id = (SELECT referrer_id FROM users WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL)"
+    ).bind(REF_REWARD, userId),
+    env.DB.prepare("UPDATE users SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL").bind(userId),
+  ]);
+  if (!(res[0].meta.changes > 0)) return false;
+
+  const ref = await env.DB.prepare("SELECT balance FROM users WHERE id = ?").bind(row.referrer_id).first();
+  await tg(env, "sendMessage", {
+    chat_id: row.referrer_id,
+    parse_mode: "HTML",
+    text:
+      `🎉 <b>+${REF_REWARD} ⭐</b>\n\n` +
+      `Друг <b>${esc(row.first_name)}</b> перешёл по твоей ссылке и подписался на канал.\n` +
+      `💰 Баланс: <b>${ref ? ref.balance : "?"} ⭐</b>`,
+    reply_markup: { inline_keyboard: [[{ text: "👤 Профиль", callback_data: "profile" }]] },
+  });
+  return true;
+}
+
+async function getProfile(env, u) {
+  const row = await env.DB.prepare("SELECT first_name, username, balance FROM users WHERE id = ?").bind(u.id).first();
+  const refs = await env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE referrer_id = ? AND ref_rewarded = 1").bind(u.id).first();
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE referrer_id = ? AND ref_rewarded = 0").bind(u.id).first();
+  const recent = await env.DB.prepare(
+    "SELECT first_name FROM users WHERE referrer_id = ? AND ref_rewarded = 1 ORDER BY created_at DESC, id DESC LIMIT 10"
+  )
+    .bind(u.id)
+    .all();
+  const name = await botName(env);
+  const n = refs ? refs.c : 0;
+  return {
+    id: u.id,
+    first_name: row ? row.first_name : String(u.first_name || "Игрок"),
+    username: row ? row.username : String(u.username || ""),
+    balance: row ? row.balance : 0,
+    refs: n,
+    pending: pending ? pending.c : 0,
+    earned: n * REF_REWARD,
+    reward: REF_REWARD,
+    ref_link: name ? `https://t.me/${name}?start=ref_${u.id}` : null,
+    recent: recent.results.map((r) => r.first_name),
+  };
+}
+
+// ---------- Telegram-бот ----------
+
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+async function handleUpdate(env, update) {
+  if (update.message) return onMessage(env, update.message);
+  if (update.callback_query) return onCallback(env, update.callback_query);
+}
+
+async function onMessage(env, m) {
+  if (!m.from || m.from.is_bot || !m.chat || m.chat.type !== "private") return;
+  const text = String(m.text || "").trim();
+  let cmd = "menu";
+  let ref = null;
+  const mm = text.match(/^\/(\w+)(?:@\w+)?(?:\s+(.+))?$/);
+  if (mm) {
+    cmd = mm[1].toLowerCase();
+    if (cmd === "start") ref = parseRef(mm[2]);
+  }
+  await upsertUser(env, m.from, ref);
+  const name = cmd === "profile" || cmd === "balance" ? "profile" : cmd === "ref" || cmd === "refs" ? "refs" : "menu";
+  const v = await viewFor(env, m.from, name, false);
+  await tg(env, "sendMessage", {
+    chat_id: m.chat.id,
+    text: v.text,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: v.keyboard },
+    link_preview_options: { is_disabled: true },
+  });
+}
+
+async function onCallback(env, q) {
+  const msg = q.message;
+  const data = String(q.data || "");
+  if (!q.from || !msg) {
+    await tg(env, "answerCallbackQuery", { callback_query_id: q.id });
+    return;
+  }
+  await upsertUser(env, q.from, null);
+  const force = data === "check";
+  const name = data === "profile" || data === "refs" ? data : "menu";
+  const v = await viewFor(env, q.from, name, force);
+  if (force) {
+    await tg(
+      env,
+      "answerCallbackQuery",
+      v.ok
+        ? { callback_query_id: q.id, text: "✅ Подписка подтверждена!" }
+        : { callback_query_id: q.id, text: "Подписки пока не вижу. Подпишись на канал и нажми ещё раз.", show_alert: true }
+    );
+    if (!v.ok) return;
+  } else {
+    await tg(env, "answerCallbackQuery", { callback_query_id: q.id });
+  }
+  await tg(env, "editMessageText", {
+    chat_id: msg.chat.id,
+    message_id: msg.message_id,
+    text: v.text,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: v.keyboard },
+    link_preview_options: { is_disabled: true },
+  });
+}
+
+// Подбирает экран для человека: без подписки — экран подписки, иначе запрошенный
+async function viewFor(env, from, name, force) {
+  const listed = isAdminId(from.id, env);
+  const sub = await isSubscribed(env, from.id, force);
+  if (sub.ok && sub.fresh) await settleReferral(env, from.id);
+  if (!sub.ok && !listed) return { ok: false, ...gateView() };
+
+  const p = await getProfile(env, from);
+  const v = name === "profile" ? profileView(p) : name === "refs" ? refsView(p) : menuView(p);
+  if (listed && !sub.ok && sub.error) {
+    v.text += `\n\n⚠️ <i>Проверка подписки не работает: ${esc(sub.error)}. Добавь бота администратором в канал.</i>`;
+  }
+  return { ok: true, ...v };
+}
+
+const BACK = [{ text: "⬅️ Назад", callback_data: "menu" }];
+
+function gateView() {
+  return {
+    text:
+      "🔒 <b>Сначала подпишись на канал</b>\n\n" +
+      `Бот и каталог открываются после подписки на <a href="${CHANNEL_URL}">${CHANNEL}</a>. Это займёт пару секунд.\n\n` +
+      "Подписался? Нажми «Проверить».",
+    keyboard: [
+      [{ text: "📢 Подписаться на канал", url: CHANNEL_URL }],
+      [{ text: "✅ Я подписался, проверить", callback_data: "check" }],
+    ],
+  };
+}
+
+function menuView(p) {
+  return {
+    text:
+      "✨ <b>FlexMarket</b>\n\n" +
+      `Привет, <b>${esc(p.first_name)}</b>! Здесь собраны ресурс паки, конфиги и шейдеры для Minecraft. Большая часть бесплатно.\n\n` +
+      `<blockquote>💰 Баланс: <b>${p.balance} ⭐</b>\n👥 Друзей приглашено: <b>${p.refs}</b></blockquote>\n` +
+      `Зови друзей и получай <b>+${p.reward} ⭐</b> за каждого.`,
+    keyboard: [
+      [{ text: "🛍 Открыть каталог", web_app: { url: WEBAPP_URL } }],
+      [
+        { text: "👤 Профиль", callback_data: "profile" },
+        { text: "👥 Друзья", callback_data: "refs" },
+      ],
+    ],
+  };
+}
+
+function profileView(p) {
+  return {
+    text:
+      "👤 <b>Профиль</b>\n\n" +
+      `<blockquote>🆔 ID: <code>${p.id}</code>\n🙂 Имя: <b>${esc(p.first_name)}</b>\n` +
+      `💰 Баланс: <b>${p.balance} ⭐</b>\n👥 Друзей: <b>${p.refs}</b>\n⏳ Ждут подписки: <b>${p.pending}</b></blockquote>\n` +
+      "<i>Звёзды начисляются за друзей. Вывести их нельзя.</i>",
+    keyboard: [
+      [{ text: "🛍 Каталог", web_app: { url: WEBAPP_URL } }, { text: "👥 Друзья", callback_data: "refs" }],
+      BACK,
+    ],
+  };
+}
+
+function refsView(p) {
+  const share = p.ref_link
+    ? `https://t.me/share/url?url=${encodeURIComponent(p.ref_link)}&text=${encodeURIComponent("Заходи в FlexMarket: ресурс паки, конфиги и шейдеры для Minecraft 🎮")}`
+    : null;
+  const names = p.recent.length ? `\n<b>Последние:</b> ${p.recent.map(esc).join(", ")}` : "";
+  return {
+    text:
+      "👥 <b>Друзья</b>\n\n" +
+      `За каждого, кто перейдёт по твоей ссылке и подпишется на канал, ты получаешь <b>+${p.reward} ⭐</b>.\n\n` +
+      (p.ref_link ? `🔗 Твоя ссылка:\n<code>${esc(p.ref_link)}</code>\n\n` : "🔗 Ссылка появится чуть позже.\n\n") +
+      `<blockquote>✅ Приглашено: <b>${p.refs}</b>\n⭐ Заработано: <b>${p.earned}</b>\n⏳ Ждут подписки: <b>${p.pending}</b></blockquote>` +
+      names,
+    keyboard: [...(share ? [[{ text: "📤 Поделиться ссылкой", url: share }]] : []), BACK],
+  };
+}
+
+async function webhookSecret(env) {
+  if (!env.BOT_TOKEN) return "";
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(env.BOT_TOKEN), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode("tg-webhook"));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
+}
+
+// Настройка бота одной кнопкой админа: вебхук, команды, кнопка меню, описание
+async function setupBot(env) {
+  const me = await tg(env, "getMe");
+  if (!me.ok) return { ok: false, username: null, errors: ["Токен бота не подошёл: " + (me.description || "нет ответа")] };
+  botUsername = me.result.username;
+  const errors = [];
+
+  const hook = await tg(env, "setWebhook", {
+    url: WORKER_URL + "/tg",
+    secret_token: await webhookSecret(env),
+    allowed_updates: ["message", "callback_query"],
+    drop_pending_updates: true,
+  });
+  if (!hook.ok) errors.push("Не удалось подключить бота к серверу: " + hook.description);
+
+  const cmds = await tg(env, "setMyCommands", {
+    commands: [
+      { command: "start", description: "Главное меню" },
+      { command: "profile", description: "Профиль и баланс" },
+      { command: "ref", description: "Пригласить друзей" },
+    ],
+  });
+  if (!cmds.ok) errors.push("Команды: " + cmds.description);
+
+  const menu = await tg(env, "setChatMenuButton", {
+    menu_button: { type: "web_app", text: "Каталог", web_app: { url: WEBAPP_URL } },
+  });
+  if (!menu.ok) errors.push("Кнопка меню: " + menu.description);
+
+  await tg(env, "setMyShortDescription", { short_description: "Ресурс паки, конфиги и шейдеры для Minecraft" });
+  await tg(env, "setMyDescription", {
+    description: "FlexMarket: каталог ресурс паков, конфигов и шейдеров для Minecraft. Профиль, баланс и звёзды за друзей. Нужна подписка на канал.",
+  });
+
+  const member = await tg(env, "getChatMember", { chat_id: CHANNEL, user_id: me.result.id });
+  const st = member.ok ? member.result.status : null;
+  if (!member.ok) errors.push(`Канал ${CHANNEL}: ${member.description}. Добавь бота администратором канала.`);
+  else if (st !== "administrator" && st !== "creator") errors.push(`Бот есть в канале ${CHANNEL}, но не администратор. Сделай его админом.`);
+
+  return { ok: errors.length === 0, username: me.result.username, errors };
+}
+
 // ---------- Вспомогательное ----------
 
 async function ensureSchema(env) {
   if (schemaReady) return;
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL DEFAULT 0, link TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0, downloads INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
-  ).run();
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', photo_url TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrals INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
-  ).run();
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, referrer_id TEXT NOT NULL, referred_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL DEFAULT 0)"
-  ).run();
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-  ).run();
+  await env.DB.batch([
+    env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL DEFAULT 0, link TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0, downloads INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
+    ),
+    env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrer_id INTEGER, ref_rewarded INTEGER NOT NULL DEFAULT 0, sub_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)"
+    ),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS users_referrer ON users (referrer_id)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
+  ]);
   schemaReady = true;
 }
 
@@ -352,242 +720,4 @@ function json(data, status, cors) {
     status,
     headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
-}
-
-
-// ---------- Referral, profile, channel membership and Telegram bot ----------
-const REQUIRED_CHANNEL = "@mineline_telegram";
-const MINI_APP_URL = "https://flexpelmen.github.io/mybot/";
-
-let telegramBotConfigured = false;
-
-async function ensureTelegramBot(env) {
-  if (!env.BOT_TOKEN) throw new Error("bot_token_missing");
-  if (telegramSetupPromise) return telegramSetupPromise;
-
-  telegramSetupPromise = (async () => {
-    const webhookUrl = "https://mybot.fleexis123.workers.dev/telegram/webhook";
-    const fingerprint = await tokenFingerprint(env.BOT_TOKEN);
-    const saved = await env.DB.prepare(
-      "SELECT value FROM app_settings WHERE key = 'telegram_bot_fingerprint'"
-    ).first();
-    const savedUsername = await env.DB.prepare(
-      "SELECT value FROM app_settings WHERE key = 'telegram_bot_username'"
-    ).first();
-
-    // A matching fingerprint means this exact token was already configured.
-    // Avoid calling Telegram on every health check / Worker cold start.
-    if (saved?.value === fingerprint) {
-      telegramBotConfigured = true;
-      cachedBotUsername = savedUsername?.value || "";
-      return { configured: true, username: cachedBotUsername, webhook_url: webhookUrl, already_configured: true };
-    }
-
-    // Validate the token first; do not persist setup state until all methods succeed.
-    const me = await telegramCall(env, "getMe");
-    await telegramCall(env, "setWebhook", {
-      url: webhookUrl,
-      secret_token: await deriveWebhookSecret(env),
-      allowed_updates: ["message", "callback_query"]
-    });
-    await telegramCall(env, "setMyCommands", {
-      commands: [
-        { command: "start", description: "Открыть MineLine" },
-        { command: "profile", description: "Мой профиль и баланс" }
-      ]
-    });
-    await telegramCall(env, "setChatMenuButton", {
-      menu_button: {
-        type: "web_app",
-        text: "Открыть каталог",
-        web_app: { url: MINI_APP_URL }
-      }
-    });
-
-    await env.DB.batch([
-      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_fingerprint', ?)").bind(fingerprint),
-      env.DB.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('telegram_bot_username', ?)").bind(String(me.username || ""))
-    ]);
-    telegramBotConfigured = true;
-    cachedBotUsername = me.username || "";
-    return { configured: true, username: cachedBotUsername, webhook_url: webhookUrl, already_configured: false };
-  })();
-
-  try {
-    return await telegramSetupPromise;
-  } catch (err) {
-    telegramSetupPromise = null;
-    telegramBotConfigured = false;
-    throw err;
-  }
-}
-
-async function tokenFingerprint(token) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function deriveWebhookSecret(env) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.BOT_TOKEN || ""));
-  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-}
-
-async function telegramCall(env, method, payload = {}) {
-  if (!env.BOT_TOKEN) throw new Error("bot_token_missing");
-  const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error(data.description || "telegram_api_error");
-  return data.result;
-}
-
-async function isSubscribed(userId, env) {
-  const id = String(userId);
-  const cachedUntil = subscriptionCache.get(id) || 0;
-  if (cachedUntil > Date.now()) return true;
-
-  // Cache only confirmed membership. A user who just subscribed can retry immediately.
-  const member = await telegramCall(env, "getChatMember", {
-    chat_id: REQUIRED_CHANNEL,
-    user_id: Number(id)
-  });
-  const subscribed = member.status === "creator" || member.status === "administrator" || member.status === "member" ||
-    (member.status === "restricted" && member.is_member === true);
-  if (subscribed) subscriptionCache.set(id, Date.now() + 20000);
-  return subscribed;
-}
-
-async function saveUser(user, env) {
-  const id = String(user.id);
-  const now = Math.floor(Date.now()/1000);
-  const inserted = await env.DB.prepare(
-    "INSERT OR IGNORE INTO users (telegram_id, username, first_name, photo_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).bind(id, String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), now, now).run();
-  await env.DB.prepare(
-    "UPDATE users SET username = ?, first_name = ?, photo_url = ?, updated_at = ? WHERE telegram_id = ?"
-  ).bind(String(user.username || ""), String(user.first_name || ""), String(user.photo_url || ""), now, id).run();
-  return !!(inserted.meta && inserted.meta.changes > 0);
-}
-
-async function getProfile(userId, env) {
-  const row = await env.DB.prepare(
-    "SELECT telegram_id, username, first_name, photo_url, balance, referrals FROM users WHERE telegram_id = ?"
-  ).bind(String(userId)).first();
-  return row ? {
-    id: row.telegram_id, username: row.username, first_name: row.first_name,
-    photo_url: row.photo_url, balance: row.balance, referrals: row.referrals,
-  } : { id: String(userId), balance: 0, referrals: 0 };
-}
-
-async function creditReferral(referrerId, referredId, env) {
-  const referrer = String(referrerId || "");
-  const referred = String(referredId || "");
-  if (!/^\d+$/.test(referrer) || !/^\d+$/.test(referred) || referrer === referred) return false;
-  const exists = await env.DB.prepare("SELECT telegram_id FROM users WHERE telegram_id = ?").bind(referrer).first();
-  if (!exists) return false;
-  const result = await env.DB.prepare(
-    "INSERT OR IGNORE INTO referrals (referrer_id, referred_id, created_at) VALUES (?, ?, ?)"
-  ).bind(referrer, referred, Math.floor(Date.now()/1000)).run();
-  if (result.meta && result.meta.changes > 0) {
-    await env.DB.prepare("UPDATE users SET balance = balance + 2, referrals = referrals + 1, updated_at = ? WHERE telegram_id = ?")
-      .bind(Math.floor(Date.now()/1000), referrer).run();
-    return true;
-  }
-  return false;
-}
-
-async function getBotUsername(env) {
-  if (cachedBotUsername) return cachedBotUsername;
-  const row = await env.DB.prepare(
-    "SELECT value FROM app_settings WHERE key = 'telegram_bot_username'"
-  ).first();
-  cachedBotUsername = row?.value || "";
-  return cachedBotUsername;
-}
-
-async function sendBotMessage(env, chatId, text, replyMarkup) {
-  return telegramCall(env, "sendMessage", {
-    chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true,
-    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-  });
-}
-
-function joinKeyboard(referrerId = "") {
-  return {
-    inline_keyboard: [
-      [{ text: "📢 Подписаться на канал", url: "https://t.me/mineline_telegram" }],
-      [{ text: "✅ Проверить подписку", callback_data: "check_sub:" + (referrerId || "0") }],
-    ],
-  };
-}
-
-async function sendBotHome(env, chatId, user) {
-  await saveUser(user, env);
-  const profile = await getProfile(user.id, env);
-  const username = await getBotUsername(env);
-  const referral = username ? `https://t.me/${username}?start=ref_${user.id}` : "Ссылка появится после настройки бота";
-  const name = escapeHtml(user.first_name || "Пользователь");
-  const text = `👤 <b>Твой профиль</b>\n\nПривет, ${name}!\n\n⭐ Баланс: <b>${profile.balance}</b>\n👥 Приглашено: <b>${profile.referrals}</b>\n\nЗа каждого нового приглашённого пользователя начисляется <b>+2 внутренние звезды</b>. Их нельзя вывести или обменять на деньги.\n\n🔗 Твоя ссылка:\n<code>${escapeHtml(referral)}</code>`;
-  const keyboard = {
-    inline_keyboard: [
-      [{ text: "🚀 Открыть Mini App", web_app: { url: MINI_APP_URL } }],
-      [{ text: "👤 Обновить профиль", callback_data: "profile" }],
-    ],
-  };
-  await sendBotMessage(env, chatId, text, keyboard);
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
-}
-
-async function handleTelegramUpdate(update, env) {
-  if (update?.callback_query) {
-    const q = update.callback_query;
-    const user = q.from;
-    if (String(q.data || "").startsWith("check_sub:")) {
-      const referrerId = String(q.data.split(":")[1] || "0");
-      const ok = await isSubscribed(user.id, env);
-      await telegramCall(env, "answerCallbackQuery", {
-        callback_query_id: q.id,
-        text: ok ? "Подписка подтверждена!" : "Сначала подпишись на канал.",
-        show_alert: !ok,
-      });
-      if (ok) {
-        const isNewUser = await saveUser(user, env);
-        if (isNewUser && referrerId !== "0") await creditReferral(referrerId, user.id, env);
-        await sendBotHome(env, q.message.chat.id, user);
-      }
-    } else if (q.data === "profile") {
-      await telegramCall(env, "answerCallbackQuery", { callback_query_id: q.id });
-      if (await isSubscribed(user.id, env)) await sendBotHome(env, q.message.chat.id, user);
-      else await sendBotMessage(env, q.message.chat.id, "Чтобы пользоваться ботом, подпишись на канал:", joinKeyboard());
-    }
-    return;
-  }
-
-  const msg = update?.message;
-  if (!msg?.from || !msg.chat) return;
-  const user = msg.from;
-  const text = String(msg.text || "").trim();
-  const match = text.match(/^\/start(?:\s+ref_(\d+))?/);
-  const referrerId = match?.[1] || "";
-  if (!(await isSubscribed(user.id, env))) {
-    await sendBotMessage(env, msg.chat.id,
-      "🔒 <b>Доступ закрыт</b>\n\nЧтобы пользоваться ботом и каталогом, подпишись на наш канал, затем нажми «Проверить подписку».",
-      joinKeyboard(referrerId));
-    return;
-  }
-  const isNewUser = await saveUser(user, env);
-  if (isNewUser && referrerId) await creditReferral(referrerId, user.id, env);
-  if (/^\/(start|profile)(?:\s|$)/.test(text) || text === "👤 Профиль") {
-    await sendBotHome(env, msg.chat.id, user);
-  } else {
-    await sendBotMessage(env, msg.chat.id, "Выбери действие:", {
-      inline_keyboard: [[{ text: "🚀 Открыть Mini App", web_app: { url: MINI_APP_URL } }], [{ text: "👤 Профиль", callback_data: "profile" }]],
-    });
-  }
 }

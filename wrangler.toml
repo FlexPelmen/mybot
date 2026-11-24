@@ -8,6 +8,13 @@ binding = "DB"
 database_name = "mybot-catalog"
 database_id = "3e961ef6-5418-4029-aafd-e1a5d24c9b4d"
 
+[vars]
+ADMIN_IDS = "5171403469"
+# Временный открытый режим админки на 2 часа (unix-время): потом выключается сам
+OPEN_ADMIN_UNTIL = "1795505838"
+# Хеш админ-кода (сам код в репозитории не хранится)
+ADMIN_CODE_HASH = "3782f9f744b10d51df1a958675b19f226260bbbed83cce1a4a20d15b0e90afe0"
+
 [observability]
 enabled = true
 head_sampling_rate = 1
