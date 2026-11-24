@@ -372,14 +372,14 @@ async function upsertUser(env, u, refId) {
   let referrer = null;
   // Реферал засчитывается только новому пользователю и только от существующего, не от самого себя
   if (refId && refId !== u.id) {
-    const exists = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(u.id).first();
+    const exists = await env.DB.prepare("SELECT id FROM fm_users WHERE id = ?").bind(u.id).first();
     if (!exists) {
-      const r = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(refId).first();
+      const r = await env.DB.prepare("SELECT id FROM fm_users WHERE id = ?").bind(refId).first();
       if (r) referrer = refId;
     }
   }
   await env.DB.prepare(
-    "INSERT INTO users (id, first_name, username, referrer_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username"
+    "INSERT INTO fm_users (id, first_name, username, referrer_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, username = excluded.username"
   )
     .bind(u.id, name, uname, referrer, now)
     .run();
@@ -410,7 +410,7 @@ async function isSubscribed(env, userId, force) {
   const now = Math.floor(Date.now() / 1000);
   const neg = negCache.get(userId);
   if (!force) {
-    const row = await env.DB.prepare("SELECT sub_until FROM users WHERE id = ?").bind(userId).first();
+    const row = await env.DB.prepare("SELECT sub_until FROM fm_users WHERE id = ?").bind(userId).first();
     if (row && row.sub_until > now) return { ok: true, fresh: false, error: null };
     if (neg && neg.until > now) return { ok: false, fresh: false, error: neg.error };
   } else if (neg && now - neg.at < 3) {
@@ -428,7 +428,7 @@ async function isSubscribed(env, userId, force) {
   const ok = st === "creator" || st === "administrator" || st === "member" || (st === "restricted" && r.result.is_member === true);
   if (ok) {
     negCache.delete(userId);
-    await env.DB.prepare("UPDATE users SET sub_until = ? WHERE id = ?").bind(now + SUB_OK_CACHE, userId).run();
+    await env.DB.prepare("UPDATE fm_users SET sub_until = ? WHERE id = ?").bind(now + SUB_OK_CACHE, userId).run();
   } else {
     if (negCache.size > 2000) negCache.clear();
     negCache.set(userId, { until: now + SUB_NO_CACHE, at: now, error: null });
@@ -447,17 +447,17 @@ async function canView(env, user, listed) {
 
 // Начисляет награду пригласившему ровно один раз, когда приглашённый подтвердил подписку
 async function settleReferral(env, userId) {
-  const row = await env.DB.prepare("SELECT referrer_id, ref_rewarded, first_name FROM users WHERE id = ?").bind(userId).first();
+  const row = await env.DB.prepare("SELECT referrer_id, ref_rewarded, first_name FROM fm_users WHERE id = ?").bind(userId).first();
   if (!row || !row.referrer_id || row.ref_rewarded) return false;
   const res = await env.DB.batch([
     env.DB.prepare(
-      "UPDATE users SET balance = balance + ? WHERE id = (SELECT referrer_id FROM users WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL)"
+      "UPDATE fm_users SET balance = balance + ? WHERE id = (SELECT referrer_id FROM fm_users WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL)"
     ).bind(REF_REWARD, userId),
-    env.DB.prepare("UPDATE users SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL").bind(userId),
+    env.DB.prepare("UPDATE fm_users SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL").bind(userId),
   ]);
   if (!(res[0].meta.changes > 0)) return false;
 
-  const ref = await env.DB.prepare("SELECT balance FROM users WHERE id = ?").bind(row.referrer_id).first();
+  const ref = await env.DB.prepare("SELECT balance FROM fm_users WHERE id = ?").bind(row.referrer_id).first();
   await tg(env, "sendMessage", {
     chat_id: row.referrer_id,
     parse_mode: "HTML",
@@ -471,11 +471,11 @@ async function settleReferral(env, userId) {
 }
 
 async function getProfile(env, u) {
-  const row = await env.DB.prepare("SELECT first_name, username, balance FROM users WHERE id = ?").bind(u.id).first();
-  const refs = await env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE referrer_id = ? AND ref_rewarded = 1").bind(u.id).first();
-  const pending = await env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE referrer_id = ? AND ref_rewarded = 0").bind(u.id).first();
+  const row = await env.DB.prepare("SELECT first_name, username, balance FROM fm_users WHERE id = ?").bind(u.id).first();
+  const refs = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 1").bind(u.id).first();
+  const pending = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 0").bind(u.id).first();
   const recent = await env.DB.prepare(
-    "SELECT first_name FROM users WHERE referrer_id = ? AND ref_rewarded = 1 ORDER BY created_at DESC, id DESC LIMIT 10"
+    "SELECT first_name FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 1 ORDER BY created_at DESC, id DESC LIMIT 10"
   )
     .bind(u.id)
     .all();
@@ -564,7 +564,7 @@ async function viewFor(env, from, name, force) {
   const listed = isAdminId(from.id, env);
   const sub = await isSubscribed(env, from.id, force);
   if (sub.ok && sub.fresh) await settleReferral(env, from.id);
-  if (!sub.ok && !listed) return { ok: false, ...gateView() };
+  if (!sub.ok && !listed) return { ok: false, ...gateView(from.first_name) };
 
   const p = await getProfile(env, from);
   const v = name === "profile" ? profileView(p) : name === "refs" ? refsView(p) : menuView(p);
@@ -576,9 +576,10 @@ async function viewFor(env, from, name, force) {
 
 const BACK = [{ text: "⬅️ Назад", callback_data: "menu" }];
 
-function gateView() {
+function gateView(name) {
   return {
     text:
+      `👋 Привет${name ? ", <b>" + esc(name) + "</b>" : ""}! Добро пожаловать в <b>FlexMarket</b> — ресурс паки, конфиги и шейдеры для Minecraft.\n\n` +
       "🔒 <b>Сначала подпишись на канал</b>\n\n" +
       `Бот и каталог открываются после подписки на <a href="${CHANNEL_URL}">${CHANNEL}</a>. Это займёт пару секунд.\n\n` +
       "Подписался? Нажми «Проверить».",
@@ -695,9 +696,9 @@ async function ensureSchema(env) {
       "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', price INTEGER NOT NULL DEFAULT 0, link TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', hidden INTEGER NOT NULL DEFAULT 0, downloads INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"
     ),
     env.DB.prepare(
-      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrer_id INTEGER, ref_rewarded INTEGER NOT NULL DEFAULT 0, sub_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)"
+      "CREATE TABLE IF NOT EXISTS fm_users (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrer_id INTEGER, ref_rewarded INTEGER NOT NULL DEFAULT 0, sub_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)"
     ),
-    env.DB.prepare("CREATE INDEX IF NOT EXISTS users_referrer ON users (referrer_id)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS fm_users_referrer ON fm_users (referrer_id)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
   ]);
   schemaReady = true;
