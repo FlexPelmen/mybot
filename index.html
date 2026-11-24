@@ -299,7 +299,11 @@
       if (opts.body) headers["Content-Type"] = "application/json";
       const code = opts.code != null ? opts.code : state.adminCode;
       if (path.startsWith("/api/admin/") && code) headers["X-Admin-Code"] = code;
-      const res = await fetch(API_URL + path, { method: opts.method, body: opts.body, headers });
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 20000);
+      let res;
+      try { res = await fetch(API_URL + path, { method: opts.method, body: opts.body, headers, signal: ctl.signal }); }
+      finally { clearTimeout(timer); }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const e = new Error(data.error || "http_" + res.status);
@@ -323,7 +327,7 @@
         setView(state.view === "profile" ? "profile" : "catalog");
       } catch (e) {
         if (e.code === "subscribe") { state.me = { ...(state.me || {}), subscribed: false }; return showGate(state.me); }
-        showMsg("warn", "Нет связи с сервером", "Проверь интернет и нажми «Повторить». Если не помогает — сообщи администратору.", [btn("Повторить", "", () => load())]);
+        showMsg("warn", "Нет связи с сервером", "Проверь интернет и нажми «Повторить». Код ошибки: " + (e.code || e.name || e.message), [btn("Повторить", "", () => load())]);
       }
     }
     function authReason(why) {

@@ -89,6 +89,10 @@ async function route(request, env, cors) {
       out.subscribed = listed || sub.ok;
       if (listed && sub.error) out.sub_error = sub.error;
       if (out.subscribed) out.profile = await getProfile(env, user);
+      if (listed) {
+        const bs = await autoSetupBot(env);
+        if (bs) out.bot_setup = bs;
+      }
     }
     return json(out, 200, cors);
   }
@@ -391,6 +395,7 @@ async function tg(env, method, body) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
+      signal: AbortSignal.timeout(6000),
     });
     return await res.json();
   } catch {
@@ -646,6 +651,20 @@ async function webhookSecret(env) {
 }
 
 // Настройка бота одной кнопкой админа: вебхук, команды, кнопка меню, описание
+// Один раз после каждого обновления сам регистрирует вебхук и команды (когда заходит админ).
+// После неудачи повторяет не чаще раза в минуту.
+const BOT_BUILD = "b3";
+async function autoSetupBot(env) {
+  const key = "botsetup:" + BOT_BUILD;
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare("SELECT fails, lock_until FROM admin_attempts WHERE k = ?").bind(key).first();
+  if (row && (row.fails === 1 || row.lock_until > now)) return null;
+  await env.DB.prepare("INSERT INTO admin_attempts (k, fails, lock_until) VALUES (?, 0, ?) ON CONFLICT(k) DO UPDATE SET lock_until = excluded.lock_until").bind(key, now + 60).run();
+  const r = await setupBot(env);
+  if (r.ok) await env.DB.prepare("UPDATE admin_attempts SET fails = 1 WHERE k = ?").bind(key).run();
+  return { ok: r.ok, errors: r.errors };
+}
+
 async function setupBot(env) {
   const me = await tg(env, "getMe");
   if (!me.ok) return { ok: false, username: null, errors: ["Токен бота не подошёл: " + (me.description || "нет ответа")] };
