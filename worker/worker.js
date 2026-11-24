@@ -102,6 +102,11 @@ async function route(request, env, cors) {
     const rows = await env.DB.prepare(
       "SELECT id, category, title, description, price, link, hidden, downloads, updated_at, (image != '') AS has_image FROM items ORDER BY downloads DESC, id DESC"
     ).all();
+    const own = new Set();
+    if (user) {
+      const pr = await env.DB.prepare("SELECT item_id FROM fm_purchases WHERE user_id = ? AND charged = 1").bind(user.id).all();
+      for (const p of pr.results) own.add(p.item_id);
+    }
     const items = rows.results
       .filter((r) => isAdmin || !r.hidden)
       .map((r) => ({
@@ -110,8 +115,9 @@ async function route(request, env, cors) {
         title: r.title,
         description: r.description,
         price: r.price,
-        // ссылка на платный товар видна только настоящему админу
-        link: r.price === 0 || listed ? r.link : "",
+        // ссылка на платный товар видна только админу и тем, кто его купил
+        owned: r.price === 0 || listed || own.has(r.id),
+        link: r.price === 0 || listed || own.has(r.id) ? r.link : "",
         hidden: !!r.hidden,
         downloads: r.downloads,
         has_image: !!r.has_image,
@@ -144,8 +150,42 @@ async function route(request, env, cors) {
   m = path.match(/^\/api\/items\/(\d+)\/download$/);
   if (m && method === "POST") {
     if (!(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
-    await env.DB.prepare("UPDATE items SET downloads = downloads + 1 WHERE id = ?").bind(Number(m[1])).run();
+    const id = Number(m[1]);
+    const it = await env.DB.prepare("SELECT price FROM items WHERE id = ?").bind(id).first();
+    if (!it) return json({ error: "not_found" }, 404, cors);
+    if (it.price > 0 && !listed) {
+      const got = await env.DB.prepare("SELECT 1 AS x FROM fm_purchases WHERE user_id = ? AND item_id = ? AND charged = 1").bind(user.id, id).first();
+      if (!got) return json({ error: "not_owned" }, 403, cors);
+    }
+    await env.DB.prepare("UPDATE items SET downloads = downloads + 1 WHERE id = ?").bind(id).run();
     return json({ ok: true }, 200, cors);
+  }
+
+  // Покупка за внутренние звёзды (те, что получены за друзей)
+  m = path.match(/^\/api\/items\/(\d+)\/buy$/);
+  if (m && method === "POST") {
+    if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    const id = Number(m[1]);
+    const it = await env.DB.prepare("SELECT id, price, link, hidden FROM items WHERE id = ?").bind(id).first();
+    if (!it || (it.hidden && !listed)) return json({ error: "not_found" }, 404, cors);
+    if (it.price <= 0) return json({ error: "free_item" }, 400, cors);
+    await upsertUser(env, user, null);
+    const owned = () => env.DB.prepare("SELECT 1 AS x FROM fm_purchases WHERE user_id = ? AND item_id = ? AND charged = 1").bind(user.id, id).first();
+    const balance = async () => (await env.DB.prepare("SELECT balance FROM fm_users WHERE id = ?").bind(user.id).first()).balance;
+    if (await owned()) return json({ ok: true, already: true, link: it.link, balance: await balance() }, 200, cors);
+    const now = Math.floor(Date.now() / 1000);
+    // Всё в одной транзакции: запись о покупке создаётся только если хватает звёзд, списание — только при записи
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO fm_purchases (user_id, item_id, price, charged, created_at) SELECT ?, ?, ?, 0, ? WHERE (SELECT balance FROM fm_users WHERE id = ?) >= ? AND NOT EXISTS (SELECT 1 FROM fm_purchases WHERE user_id = ? AND item_id = ?)"
+      ).bind(user.id, id, it.price, now, user.id, it.price, user.id, id),
+      env.DB.prepare(
+        "UPDATE fm_users SET balance = balance - ? WHERE id = ? AND EXISTS (SELECT 1 FROM fm_purchases WHERE user_id = ? AND item_id = ? AND charged = 0)"
+      ).bind(it.price, user.id, user.id, id),
+      env.DB.prepare("UPDATE fm_purchases SET charged = 1 WHERE user_id = ? AND item_id = ? AND charged = 0").bind(user.id, id),
+    ]);
+    if (!(await owned())) return json({ error: "not_enough", price: it.price, balance: await balance() }, 402, cors);
+    return json({ ok: true, link: it.link, balance: await balance() }, 200, cors);
   }
 
   // ---------- Только для админа ----------
@@ -718,6 +758,7 @@ async function ensureSchema(env) {
       "CREATE TABLE IF NOT EXISTS fm_users (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', balance INTEGER NOT NULL DEFAULT 0, referrer_id INTEGER, ref_rewarded INTEGER NOT NULL DEFAULT 0, sub_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)"
     ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS fm_users_referrer ON fm_users (referrer_id)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_purchases (user_id INTEGER NOT NULL, item_id INTEGER NOT NULL, price INTEGER NOT NULL, charged INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, item_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
   ]);
   schemaReady = true;

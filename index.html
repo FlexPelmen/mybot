@@ -428,7 +428,7 @@
     function card(it, first) {
       return h("button", { class: "card slot" + (first ? " top1" : ""), onclick: () => openItem(it) },
         cover(it, false),
-        h("span", { class: "tag px" + (it.price > 0 ? " paid" : "") }, it.price > 0 ? it.price + " ★" : "FREE"),
+        h("span", { class: "tag px" + (it.price > 0 && !it.owned ? " paid" : "") }, it.price === 0 ? "FREE" : it.owned ? "OK" : it.price + " ★"),
         it.hidden ? h("span", { class: "tag off" }, "скрыт") : null,
         h("div", { class: "name" }, it.title),
         h("div", { class: "dl" }, pix("down", 12), dlWord(it.downloads || 0))
@@ -527,7 +527,14 @@
     function openItem(it) {
       const link = safeUrl(it.link);
       let action;
-      if (it.price > 0) action = btn(`Купить за ${it.price} ★`, "", () => buy(it), "star");
+      const bal = (state.me.profile && state.me.profile.balance) || 0;
+      let hint = null;
+      if (it.price > 0 && !it.owned) {
+        action = btn(`Купить за ${it.price} ★`, bal >= it.price ? "" : "alt", () => buy(it), "star");
+        hint = h("p", { class: "how", style: "margin:10px 2px 0" }, bal >= it.price
+          ? `У тебя ${bal} ★. После покупки останется ${bal - it.price} ★.`
+          : `У тебя ${bal} ★, не хватает ${it.price - bal} ★. Приглашай друзей: +${(state.me.profile && state.me.profile.reward) || 2} ★ за каждого.`);
+      }
       else if (link) action = btn("Скачать", "", () => download(it, link), "down");
       else action = h("button", { class: "btn slot", disabled: true }, "Ссылка пока не добавлена");
 
@@ -543,12 +550,12 @@
         h("div", { class: "body" },
           h("h2", {}, it.title),
           h("div", { class: "chips" },
-            h("span", { class: "slot px", style: "font-size:10px;color:" + (it.price > 0 ? "var(--gold)" : "var(--free)") }, it.price > 0 ? it.price + " ★" : "FREE"),
+            h("span", { class: "slot px", style: "font-size:10px;color:" + (it.price > 0 && !it.owned ? "var(--gold)" : "var(--free)") }, it.price > 0 ? it.price + " ★" : "FREE"),
             h("span", { class: "slot" }, pix(catOf(it.category).icon, 16), catOf(it.category).name),
             h("span", { class: "slot" }, pix("down", 14), `${it.downloads || 0}`)
           ),
           it.description ? h("div", { class: "desc" }, it.description) : null,
-          action, admin
+          action, hint, admin
         ),
       ]);
     }
@@ -561,9 +568,28 @@
       renderCatalog();
     }
 
-    function buy(it) {
-      if (!CONTACT) { toast("Покупка за звёзды скоро появится"); return; }
-      openTg(`https://t.me/${CONTACT}`);
+    async function buy(it) {
+      const bal = (state.me.profile && state.me.profile.balance) || 0;
+      if (bal < it.price) {
+        toast(`Не хватает ${it.price - bal} ★. Приглашай друзей в профиле`);
+        closeSheet && closeSheet(); setView("profile");
+        return;
+      }
+      const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm(`Купить «${it.title}» за ${it.price} ★?`, res)) : confirm(`Купить «${it.title}» за ${it.price} ★?`);
+      if (!ok) return;
+      try {
+        const r = await api(`/api/items/${it.id}/buy`, { method: "POST" });
+        it.owned = true; it.link = r.link || it.link;
+        state.me.profile.balance = r.balance;
+        $("balChip").replaceChildren(pix("star", 16), String(r.balance));
+        haptic("success");
+        toast(r.already ? "Этот товар уже куплен" : "Куплено! Осталось " + r.balance + " ★");
+        renderCatalog();
+        openItem(it);
+      } catch (e) {
+        if (e.code === "not_enough") { state.me.profile.balance = e.balance || 0; toast("Не хватает звёзд"); }
+        else toast("Не получилось купить: " + e.message);
+      }
     }
 
     // ---------- Админ-код ----------
