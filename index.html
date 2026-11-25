@@ -480,6 +480,7 @@
       if (me.listed) {
         pad2.append(h("div", { class: "sec" }, "Для администратора"),
           h("div", { class: "how" }, "Если бот не отвечает в чате или не пускает по подписке, нажми «Настроить бота». Он сам включит команды, меню и проверит доступ к каналу."),
+          btn("Рассылка всем", "", () => withAdmin(openBroadcast)),
           btn("Настроить бота", "alt", () => withAdmin(setupBot), "gear"));
         if (me.sub_error) pad2.append(h("div", { class: "note warn slot sunk" }, h("b", {}, "Проверка подписки не работает: "), me.sub_error));
       }
@@ -499,6 +500,58 @@
         ));
         await refreshMe();
       } catch (e) { toast(adminErr(e)); }
+    }
+
+    // ---------- Рассылка (только настоящий админ) ----------
+    async function openBroadcast() {
+      let st;
+      try { st = await api("/api/admin/broadcast/status"); } catch (e) { toast(adminErr(e)); return; }
+      const text = h("textarea", { maxlength: "3500", placeholder: "Текст сообщения" });
+      const bt = h("input", { type: "text", maxlength: "40", placeholder: "Текст кнопки (необязательно)" });
+      const bu = h("input", { type: "url", placeholder: "Ссылка кнопки, https://…" });
+      const field = (el) => h("label", { class: "field slot sunk", style: "margin:0;padding:0;color:inherit" }, el);
+      const out = h("div", { class: "err", style: "color:var(--hint)" });
+      const read = () => ({ text: text.value.trim(), btn_text: bt.value.trim(), btn_url: bu.value.trim() });
+      const post = (p, body) => api("/api/admin/broadcast/" + p, { method: "POST", body: JSON.stringify(body) });
+      const errText = (e) => ({ bad_text: "Напиши текст сообщения", bad_button: "Кнопке нужны и текст, и ссылка с https://", no_audience: "Некому отправлять" })[e.code] || adminErr(e);
+      const testBtn = btn("Отправить мне для проверки", "alt", async () => {
+        const b = read(); if (!b.text) { out.textContent = "Напиши текст сообщения"; return; }
+        testBtn.disabled = true; out.textContent = "";
+        try { const r = await post("test", b); out.textContent = r.ok ? "Отправлено тебе в чат с ботом" : "Не отправилось: " + r.error; }
+        catch (e) { out.textContent = errText(e); }
+        testBtn.disabled = false;
+      });
+      async function run(id, total) {
+        allBtn.disabled = true; testBtn.disabled = true;
+        try {
+          for (let i = 0; i < 400; i++) {
+            const r = await post("step", { id });
+            out.style.color = "var(--text)";
+            out.textContent = `Отправлено ${r.sent} из ${r.total}` + (r.failed ? `, не доставлено ${r.failed}` : "");
+            if (r.done) { haptic("success"); out.textContent = `Готово. Получили ${r.sent}, не доставлено ${r.failed} (заблокировали бота или не запускали его).`; return; }
+            if (r.wait) await new Promise((res) => setTimeout(res, r.wait * 1000));
+          }
+        } catch (e) { out.style.color = "var(--danger)"; out.textContent = "Остановилось: " + errText(e) + ". Нажми «Отправить всем» ещё раз — продолжу с того же места."; allBtn.disabled = false; testBtn.disabled = false; }
+      }
+      const allBtn = btn(`Отправить всем (${st.audience})`, "", async () => {
+        const b = read(); if (!b.text) { out.textContent = "Напиши текст сообщения"; return; }
+        const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm(`Отправить сообщение ${st.audience} людям? Отменить будет нельзя.`, res)) : confirm("Отправить всем? Отменить нельзя.");
+        if (!ok) return;
+        out.textContent = "";
+        try { const r = await post("start", b); await run(r.id, r.total); }
+        catch (e) {
+          if (e.code === "already_running") { await run(e.id, e.total); }
+          else { out.style.color = "var(--danger)"; out.textContent = errText(e); }
+        }
+      });
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Рассылка"),
+        h("p", { class: "how" }, `Сообщение получат до ${st.audience} человек. Не закрывай окно, пока идёт отправка. Реже раза в несколько дней писать не стоит: люди блокируют бота.`),
+        h("label", {}, "Сообщение"), field(text),
+        h("label", {}, "Кнопка под сообщением"), field(bt), h("div", { style: "height:8px" }), field(bu),
+        out, testBtn, allBtn
+      ));
+      if (st.last && st.last.status === "running") { out.textContent = `Есть незаконченная рассылка (${st.last.sent} из ${st.last.total}). Нажми «Отправить всем» с тем же текстом, чтобы продолжить.`; }
     }
 
     async function refreshMe() {

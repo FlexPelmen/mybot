@@ -203,6 +203,13 @@ async function route(request, env, cors) {
       return json(await setupBot(env), 200, cors);
     }
 
+    // ---- Рассылка: только настоящий админ из списка (открытый режим не считается) ----
+    if (path.startsWith("/api/admin/broadcast")) {
+      if (!listed) return json({ error: "forbidden" }, 403, cors);
+      const r = await broadcastRoute(env, user, path, method, await readJson(request));
+      return json(r.body, r.status, cors);
+    }
+
     if (path === "/api/admin/items" && method === "POST") {
       const body = await readJson(request);
       const data = validateItem(body, false);
@@ -263,6 +270,89 @@ async function route(request, env, cors) {
   }
 
   return json({ error: "not_found" }, 404, cors);
+}
+
+// ---------- Рассылка ----------
+
+const BC_STEP = 25;
+
+function bcValidate(b) {
+  if (!b || typeof b !== "object") return { error: "bad_body" };
+  const text = String(b.text || "").trim();
+  if (text.length < 1 || text.length > 3500) return { error: "bad_text" };
+  const btnText = String(b.btn_text || "").trim().slice(0, 40);
+  const btnUrl = String(b.btn_url || "").trim();
+  if (btnText || btnUrl) {
+    if (!btnText || !/^https?:\/\/[^\s]+$/i.test(btnUrl) || btnUrl.length > 500) return { error: "bad_button" };
+  }
+  return { text, btnText, btnUrl };
+}
+
+function bcMessage(chatId, d) {
+  const msg = { chat_id: chatId, text: d.text, link_preview_options: { is_disabled: true } };
+  if (d.btnText) msg.reply_markup = { inline_keyboard: [[{ text: d.btnText, url: d.btnUrl }]] };
+  return msg;
+}
+
+async function bcAudience(env) {
+  const r = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE id NOT IN (SELECT user_id FROM fm_blocked)").first();
+  return r.c;
+}
+
+async function broadcastRoute(env, user, path, method, body) {
+  if (path === "/api/admin/broadcast/status" && method === "GET") {
+    const last = await env.DB.prepare("SELECT id, total, sent, failed, status FROM fm_broadcasts ORDER BY id DESC LIMIT 1").first();
+    return { status: 200, body: { audience: await bcAudience(env), last: last || null } };
+  }
+  if (path === "/api/admin/broadcast/test" && method === "POST") {
+    const d = bcValidate(body);
+    if (d.error) return { status: 400, body: { error: d.error } };
+    const r = await tg(env, "sendMessage", bcMessage(user.id, d));
+    return { status: 200, body: r.ok ? { ok: true } : { ok: false, error: r.description || "telegram_error" } };
+  }
+  if (path === "/api/admin/broadcast/start" && method === "POST") {
+    const running = await env.DB.prepare("SELECT id, total, sent, failed FROM fm_broadcasts WHERE status = 'running' ORDER BY id DESC LIMIT 1").first();
+    if (running) return { status: 409, body: { error: "already_running", id: running.id, total: running.total, sent: running.sent, failed: running.failed } };
+    const d = bcValidate(body);
+    if (d.error) return { status: 400, body: { error: d.error } };
+    const total = await bcAudience(env);
+    if (!total) return { status: 400, body: { error: "no_audience" } };
+    const res = await env.DB.prepare(
+      "INSERT INTO fm_broadcasts (text, btn_text, btn_url, total, sent, failed, cursor, status, created_at) VALUES (?, ?, ?, ?, 0, 0, 0, 'running', ?)"
+    ).bind(d.text, d.btnText, d.btnUrl, total, Math.floor(Date.now() / 1000)).run();
+    return { status: 200, body: { ok: true, id: res.meta.last_row_id, total } };
+  }
+  if (path === "/api/admin/broadcast/step" && method === "POST") {
+    const id = Number(body && body.id);
+    const bc = await env.DB.prepare("SELECT * FROM fm_broadcasts WHERE id = ?").bind(id).first();
+    if (!bc) return { status: 404, body: { error: "not_found" } };
+    if (bc.status !== "running") return { status: 200, body: { done: true, total: bc.total, sent: bc.sent, failed: bc.failed } };
+    const rows = await env.DB.prepare(
+      "SELECT id FROM fm_users WHERE id > ? AND id NOT IN (SELECT user_id FROM fm_blocked) ORDER BY id LIMIT ?"
+    ).bind(bc.cursor, BC_STEP).all();
+    const d = { text: bc.text, btnText: bc.btn_text, btnUrl: bc.btn_url };
+    let sent = 0, failed = 0, cursor = bc.cursor, wait = 0;
+    const dead = [];
+    for (const u of rows.results) {
+      const r = await tg(env, "sendMessage", bcMessage(u.id, d));
+      if (r.ok) sent++;
+      else if (r.error_code === 429) { wait = (r.parameters && r.parameters.retry_after) || 5; break; }
+      else {
+        failed++;
+        // заблокировал бота или не запускал его — больше не пишем
+        if (r.error_code === 403 || r.error_code === 400) dead.push(u.id);
+      }
+      cursor = u.id;
+    }
+    const finished = !wait && rows.results.length < BC_STEP;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE fm_broadcasts SET sent = sent + ?, failed = failed + ?, cursor = ?, status = ? WHERE id = ?")
+        .bind(sent, failed, cursor, finished ? "done" : "running", id),
+      ...dead.map((x) => env.DB.prepare("INSERT OR IGNORE INTO fm_blocked (user_id) VALUES (?)").bind(x)),
+    ]);
+    return { status: 200, body: { done: finished, total: bc.total, sent: bc.sent + sent, failed: bc.failed + failed, wait } };
+  }
+  return { status: 404, body: { error: "not_found" } };
 }
 
 // ---------- Проверка данных товара ----------
@@ -759,6 +849,8 @@ async function ensureSchema(env) {
     ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS fm_users_referrer ON fm_users (referrer_id)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_purchases (user_id INTEGER NOT NULL, item_id INTEGER NOT NULL, price INTEGER NOT NULL, charged INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, item_id))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_blocked (user_id INTEGER PRIMARY KEY)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_broadcasts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, btn_text TEXT NOT NULL DEFAULT '', btn_url TEXT NOT NULL DEFAULT '', total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'running', created_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
   ]);
   schemaReady = true;
