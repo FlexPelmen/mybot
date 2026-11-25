@@ -480,6 +480,7 @@
       if (me.listed) {
         pad2.append(h("div", { class: "sec" }, "Для администратора"),
           h("div", { class: "how" }, "Если бот не отвечает в чате или не пускает по подписке, нажми «Настроить бота». Он сам включит команды, меню и проверит доступ к каналу."),
+          btn("Рефералы: кто и кого пригласил", "alt", () => withAdmin(openReferrals)),
           btn("Рассылка всем", "", () => withAdmin(openBroadcast)),
           btn("Настроить бота", "alt", () => withAdmin(setupBot), "gear"));
         if (me.sub_error) pad2.append(h("div", { class: "note warn slot sunk" }, h("b", {}, "Проверка подписки не работает: "), me.sub_error));
@@ -500,6 +501,44 @@
         ));
         await refreshMe();
       } catch (e) { toast(adminErr(e)); }
+    }
+
+    // ---------- Отчёт по рефералам (только настоящий админ) ----------
+    const fmtDate = (ts) => { try { return new Date(ts * 1000).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+    const who = (n, u) => (n || "Без имени") + (u ? " @" + u : "");
+
+    async function openReferrals() {
+      let d;
+      try { d = await api("/api/admin/referrals"); } catch (e) { toast(adminErr(e)); return; }
+      let tab = "top";
+      const list = h("div", { class: "friends slot", style: "margin-top:12px" });
+      const tabs = h("div", { class: "two" });
+      const draw = () => {
+        tabs.replaceChildren(
+          h("button", { class: "btn slot " + (tab === "top" ? "" : "alt"), onclick: () => { tab = "top"; draw(); } }, "Кто приглашал"),
+          h("button", { class: "btn slot " + (tab === "recent" ? "" : "alt"), onclick: () => { tab = "recent"; draw(); } }, "Последние"));
+        const rows = tab === "top"
+          ? d.top.map((x) => h("div", { class: "friend", style: "align-items:flex-start" },
+              h("div", { style: "flex:1;min-width:0" },
+                h("div", { style: "word-break:break-word" }, who(x.name, x.username)),
+                h("div", { style: "color:var(--hint);font-size:12px" }, `ID ${x.id} · последний ${fmtDate(x.last_at)}`)),
+              h("span", {}, `${x.confirmed}/${x.invited}`)))
+          : d.recent.map((x) => h("div", { class: "friend", style: "align-items:flex-start" },
+              h("div", { style: "flex:1;min-width:0" },
+                h("div", { style: "word-break:break-word" }, who(x.name, x.username)),
+                h("div", { style: "color:var(--hint);font-size:12px" }, `зашёл ${fmtDate(x.joined_at)}` + (x.confirmed_at ? `, подписался ${fmtDate(x.confirmed_at)}` : x.confirmed ? ", подписка подтверждена" : ", ещё не подписался")),
+                h("div", { style: "color:var(--hint);font-size:12px" }, "пригласил: " + who(x.inviter.name, x.inviter.username) + ` (ID ${x.inviter.id})`)),
+              h("span", { style: x.confirmed ? "" : "color:var(--hint)" }, x.confirmed ? "+2" : "…")));
+        list.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty" }, "Пока никого")]));
+      };
+      draw();
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Рефералы"),
+        h("div", { class: "stats" }, stat(d.inviters, "пригласили"), stat(d.invited, "зашло по ссылкам"), stat(d.confirmed, "подписались")),
+        h("p", { class: "how", style: "margin-top:12px" }, "В списке «Кто приглашал»: подписались / всего зашло. Показаны до 100 записей."),
+        tabs, list,
+        btn("Закрыть", "alt", () => closeSheet && closeSheet())
+      ));
     }
 
     // ---------- Рассылка (только настоящий админ) ----------

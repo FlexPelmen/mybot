@@ -203,6 +203,12 @@ async function route(request, env, cors) {
       return json(await setupBot(env), 200, cors);
     }
 
+    // ---- Кто кого приглашал: только настоящий админ ----
+    if (path === "/api/admin/referrals" && method === "GET") {
+      if (!listed) return json({ error: "forbidden" }, 403, cors);
+      return json(await referralsReport(env), 200, cors);
+    }
+
     // ---- Рассылка: только настоящий админ из списка (открытый режим не считается) ----
     if (path.startsWith("/api/admin/broadcast")) {
       if (!listed) return json({ error: "forbidden" }, 403, cors);
@@ -353,6 +359,31 @@ async function broadcastRoute(env, user, path, method, body) {
     return { status: 200, body: { done: finished, total: bc.total, sent: bc.sent + sent, failed: bc.failed + failed, wait } };
   }
   return { status: 404, body: { error: "not_found" } };
+}
+
+// ---------- Отчёт по рефералам (для админа) ----------
+
+async function referralsReport(env) {
+  const tot = await env.DB.prepare(
+    "SELECT COUNT(*) AS invited, COUNT(DISTINCT referrer_id) AS inviters, SUM(CASE WHEN ref_rewarded > 0 THEN 1 ELSE 0 END) AS confirmed FROM fm_users WHERE referrer_id IS NOT NULL"
+  ).first();
+  const inviters = await env.DB.prepare(
+    "SELECT r.id, r.first_name, r.username, COUNT(*) AS invited, SUM(CASE WHEN u.ref_rewarded > 0 THEN 1 ELSE 0 END) AS confirmed, MAX(u.created_at) AS last_at FROM fm_users u JOIN fm_users r ON r.id = u.referrer_id GROUP BY r.id ORDER BY confirmed DESC, invited DESC, last_at DESC LIMIT 100"
+  ).all();
+  const recent = await env.DB.prepare(
+    "SELECT u.id, u.first_name, u.username, u.created_at, u.ref_rewarded, r.id AS inviter_id, r.first_name AS inviter_name, r.username AS inviter_username FROM fm_users u JOIN fm_users r ON r.id = u.referrer_id ORDER BY u.created_at DESC, u.id DESC LIMIT 100"
+  ).all();
+  return {
+    invited: tot.invited || 0,
+    inviters: tot.inviters || 0,
+    confirmed: tot.confirmed || 0,
+    top: inviters.results.map((x) => ({ id: x.id, name: x.first_name, username: x.username, invited: x.invited, confirmed: x.confirmed || 0, last_at: x.last_at })),
+    recent: recent.results.map((x) => ({
+      id: x.id, name: x.first_name, username: x.username, joined_at: x.created_at,
+      confirmed_at: x.ref_rewarded > 1 ? x.ref_rewarded : 0, confirmed: x.ref_rewarded > 0,
+      inviter: { id: x.inviter_id, name: x.inviter_name, username: x.inviter_username },
+    })),
+  };
 }
 
 // ---------- Проверка данных товара ----------
@@ -588,7 +619,7 @@ async function settleReferral(env, userId) {
     env.DB.prepare(
       "UPDATE fm_users SET balance = balance + ? WHERE id = (SELECT referrer_id FROM fm_users WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL)"
     ).bind(REF_REWARD, userId),
-    env.DB.prepare("UPDATE fm_users SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL").bind(userId),
+    env.DB.prepare("UPDATE fm_users SET ref_rewarded = ? WHERE id = ? AND ref_rewarded = 0 AND referrer_id IS NOT NULL").bind(Math.max(2, Math.floor(Date.now() / 1000)), userId),
   ]);
   if (!(res[0].meta.changes > 0)) return false;
 
@@ -607,10 +638,10 @@ async function settleReferral(env, userId) {
 
 async function getProfile(env, u) {
   const row = await env.DB.prepare("SELECT first_name, username, balance FROM fm_users WHERE id = ?").bind(u.id).first();
-  const refs = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 1").bind(u.id).first();
+  const refs = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE referrer_id = ? AND ref_rewarded > 0").bind(u.id).first();
   const pending = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 0").bind(u.id).first();
   const recent = await env.DB.prepare(
-    "SELECT first_name FROM fm_users WHERE referrer_id = ? AND ref_rewarded = 1 ORDER BY created_at DESC, id DESC LIMIT 10"
+    "SELECT first_name FROM fm_users WHERE referrer_id = ? AND ref_rewarded > 0 ORDER BY created_at DESC, id DESC LIMIT 10"
   )
     .bind(u.id)
     .all();
