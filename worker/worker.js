@@ -143,7 +143,7 @@ async function route(request, env, cors) {
     const mine = await env.DB.prepare("SELECT item_id, title, status FROM fm_ugc WHERE author_id = ? ORDER BY item_id DESC LIMIT 20").bind(user.id).all();
     return json({
       active: until > Date.now() / 1000, until,
-      price: Number(env.SUB_PRICE || 299), final: finalPrice(Number(env.SUB_PRICE || 299), disc), discount: disc ? { percent: disc.percent, code: disc.code } : null, days: Number(env.SUB_DAYS || 30), url: String(env.DONATION_URL || ""),
+      price: Number(env.SUB_PRICE || 299), final: finalPrice(Number(env.SUB_PRICE || 299), disc), discount: disc ? { percent: disc.percent, code: disc.code } : null, days: Number(env.SUB_DAYS || 30), usd: await usdInfo(env, Number(env.SUB_PRICE || 299), finalPrice(Number(env.SUB_PRICE || 299), disc)), url: String(env.DONATION_URL || ""),
       username: user.username || "", pending: pend ? pend.created_at : 0, mine: mine.results,
     }, 200, cors);
   }
@@ -539,6 +539,40 @@ async function moderationRoute(env, path, method, body) {
     return { status: 200, body: { ok: true } };
   }
   return { status: 404, body: { error: "not_found" } };
+}
+
+// ---------- Курс доллара (для подсказки цены) ----------
+
+const RATE_TTL = 6 * 3600;
+let rateMem = { v: 0, t: 0 };
+
+// Курс ЦБ РФ на сегодня; если ЦБ недоступен — последний сохранённый, затем USD_RATE из настроек
+async function getUsdRate(env) {
+  const now = Math.floor(Date.now() / 1000);
+  if (rateMem.v && now - rateMem.t < RATE_TTL) return rateMem.v;
+  const row = await env.DB.prepare("SELECT v, t FROM fm_kv WHERE k = 'usd_rate'").first();
+  if (row && now - row.t < RATE_TTL) { rateMem = { v: Number(row.v), t: row.t }; return rateMem.v; }
+  try {
+    const res = await fetch("https://www.cbr-xml-daily.ru/daily_json.js", { signal: AbortSignal.timeout(4000) });
+    const j = await res.json();
+    const u = j && j.Valute && j.Valute.USD;
+    const rate = u ? Number(u.Value) / Number(u.Nominal || 1) : 0;
+    if (Number.isFinite(rate) && rate > 10 && rate < 1000) {
+      await env.DB.prepare("INSERT INTO fm_kv (k, v, t) VALUES ('usd_rate', ?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v, t = excluded.t").bind(String(rate), now).run();
+      rateMem = { v: rate, t: now };
+      return rate;
+    }
+  } catch {}
+  if (row && Number(row.v) > 0) return Number(row.v);
+  const fixed = Number(env.USD_RATE || 0);
+  return fixed > 0 ? fixed : 0;
+}
+
+async function usdInfo(env, base, final) {
+  const rate = await getUsdRate(env);
+  if (!rate) return null;
+  const c = (rub) => Math.round((rub / rate) * 100) / 100;
+  return { rate: Math.round(rate * 100) / 100, final: c(final), base: c(base) };
 }
 
 // ---------- Промо-коды ----------
@@ -1128,6 +1162,7 @@ async function ensureSchema(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_promo_uses (code TEXT NOT NULL, user_id INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (code, user_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_discount (user_id INTEGER PRIMARY KEY, code TEXT NOT NULL, percent INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_payreq_promo (req_id INTEGER PRIMARY KEY, code TEXT NOT NULL, percent INTEGER NOT NULL, base_price INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, t INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_blocked (user_id INTEGER PRIMARY KEY)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_broadcasts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, btn_text TEXT NOT NULL DEFAULT '', btn_url TEXT NOT NULL DEFAULT '', total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'running', created_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),

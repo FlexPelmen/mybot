@@ -854,6 +854,7 @@
     }
 
     // ---------- Подписка ----------
+    const usd = (v) => "$" + v.toFixed(2);
     const fmtDay = (ts) => { try { return new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); } catch (e) { return ""; } };
     const STATUS = { pending: "на проверке", approved: "опубликован", rejected: "отклонён" };
     function subErr(e) {
@@ -876,6 +877,7 @@
         h("div", { class: "lab" }, s.active ? "Подписка активна" : "Подписка FlexMarket"),
         h("div", { class: "num", style: "font-size:" + (s.active ? "18px" : "26px") }, pix("crown", 30),
           s.active ? "до " + fmtDay(s.until) : s.discount ? [h("s", { class: "old" }, `${s.price} ₽`), `${s.final} ₽`] : `${s.price} ₽`),
+        s.active ? null : h("div", { class: "fine", style: "margin:-2px 0 6px" }, s.usd ? (s.discount ? `(${usd(s.usd.final)}, было ${usd(s.usd.base)})` : `(${usd(s.usd.final)})`) : ""),
         h("div", { class: "fine" }, s.active ? "Все товары бесплатны, и можно выкладывать свои." : `на ${s.days} дней` + (s.discount ? `. Скидка ${s.discount.percent}% по промо-коду` : ""))));
       if (s.active && s.discount) kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Скидка на продление: "), `${s.discount.percent}%, цена ${s.final} ₽ вместо ${s.price} ₽.`));
       kids.push(h("div", { class: "sec" }, "Что даёт подписка"));
@@ -886,9 +888,9 @@
         kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Заявка отправлена. "), "Мы проверяем платёж, подписка придёт в течение нескольких часов. Я напишу тебе в чат с ботом."));
       } else {
         kids.push(h("div", { class: "sec" }, s.active ? "Продлить подписку" : "Как оформить"));
-        kids.push(h("p", { class: "how", style: "white-space:pre-line" }, `1. Нажми «Оплатить ${s.final} ₽» и задонать эту сумму.\n2. В сообщении к донату напиши свой юзернейм${uname ? ": @" + uname : ""}.\n3. Вернись сюда и нажми «Я оплатил».`));
+        kids.push(h("p", { class: "how", style: "white-space:pre-line" }, `1. Нажми «Оплатить ${s.final} ₽${s.usd ? " (" + usd(s.usd.final) + ")" : ""}» и задонать эту сумму.\n2. В сообщении к донату напиши свой юзернейм${uname ? ": @" + uname : ""}.\n3. Вернись сюда и нажми «Я оплатил».`));
         if (!uname) kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "У тебя нет юзернейма. "), "Задай его в настройках Telegram, иначе мы не найдём платёж. В сообщении можно указать ID: " + state.me.profile.id));
-        kids.push(btn(`Оплатить ${s.final} ₽`, "", () => { if (!s.url) { toast("Оплата скоро появится"); return; } openLink(s.url); }));
+        kids.push(btn(`Оплатить ${s.final} ₽` + (s.usd ? ` (${usd(s.usd.final)})` : ""), "", () => { if (!s.url) { toast("Оплата скоро появится"); return; } openLink(s.url); }));
         kids.push(btn("Я оплатил", "alt", async () => {
           const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm("Ты уже отправил донат? Мы проверим платёж вручную.", res)) : confirm("Ты уже отправил донат?");
           if (!ok) return;
