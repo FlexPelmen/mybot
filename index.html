@@ -50,6 +50,10 @@
     }
     .brand { font-family: var(--px); font-size: 13px; display: flex; align-items: center; gap: 9px; }
     .brand b { color: var(--gold); font-weight: 400; }
+    .right { display: flex; align-items: center; gap: 8px; }
+    .gift { border: 0; width: 40px; height: 40px; display: grid; place-items: center; background: var(--panel2); cursor: pointer; }
+    .gift:active { transform: translateY(2px); }
+    s.old { color: var(--hint); font-size: .62em; margin-right: 8px; text-decoration-thickness: 3px; }
     .chip { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-family: var(--px); font-size: 11px; }
 
     /* Категории и поиск */
@@ -188,7 +192,7 @@
 <body>
   <div class="top">
     <div class="brand"><span id="logo"></span><span>Flex<b>Market</b></span></div>
-    <div class="chip slot sunk" id="balChip" hidden></div>
+    <div class="right"><button class="gift slot" id="giftBtn" hidden aria-label="Ввести промо-код"></button><div class="chip slot sunk" id="balChip" hidden></div></div>
   </div>
 
   <main>
@@ -234,6 +238,7 @@
       plus: { g: ["...pp...", "...pp...", "...pp...", "pppppppp", "pppppppp", "...pp...", "...pp...", "...pp..."], p: { p: "currentColor" } },
       down: { g: ["...dd...", "...dd...", "...dd...", "dddddddd", ".dddddd.", "..dddd..", "...dd...", "........"], p: { d: "currentColor" } },
       crown: { g: ["y..yy..y", "yy.yy.yy", "yyyyyyyy", "yyyyyyyy", "yyrryyrr".slice(0,8), "yyyyyyyy", "yyyyyyyy", "........"], p: { y: "#ffc93c", r: "#ff6b6b" } },
+      gift: { g: ["..rr.rr.", "...rrr..", "bbbrrbbb", "bbbrrbbb", "rrrrrrrr", "bbbrrbbb", "bbbrrbbb", "bbbrrbbb"], p: { r: "#ffc93c", b: "#d4504a" } },
       lock: { g: ["..llll..", ".l....l.", ".l....l.", "gggggggg", "ggggkggg", "ggggkggg", "gggggggg", "gggggggg"], p: { l: "#aeb6cc", g: "#ffc93c", k: "#3a2700" } },
       warn: { g: ["...rr...", "...rr...", "..rrrr..", "..rwwr..", ".rrwwrr.", ".rrrrrr.", "rrrwwrrr", "rrrrrrrr"], p: { r: "#ff6b6b", w: "#fff" } },
     };
@@ -361,7 +366,7 @@
     function showMsg(icon, title, text, buttons) {
       state.view = "msg";
       show("vMsg");
-      $("hotbar").hidden = true; $("fab").hidden = true; $("balChip").hidden = true;
+      $("hotbar").hidden = true; $("fab").hidden = true; $("balChip").hidden = true; $("giftBtn").hidden = true;
       $("vMsg").replaceChildren(h("div", { class: "msg slot" },
         h("div", { class: "big" }, pix(icon, 56)),
         h("h2", {}, title),
@@ -391,6 +396,8 @@
       const me = state.me;
       $("hotbar").hidden = false;
       $("balChip").hidden = false;
+      $("giftBtn").hidden = false;
+      $("giftBtn").replaceChildren(pix("gift", 24));
       $("balChip").replaceChildren(pix("star", 16), String((me.profile && me.profile.balance) || 0));
       $("hbCatalog").replaceChildren(pix("chest", 26), "Каталог");
       $("hbProfile").replaceChildren(pix("head", 26), "Профиль");
@@ -490,6 +497,7 @@
           h("div", { class: "how" }, "Если бот не отвечает в чате или не пускает по подписке, нажми «Настроить бота». Он сам включит команды, меню и проверит доступ к каналу."),
           btn("Заявки на подписку" + (me.pending_payments ? ` (${me.pending_payments})` : ""), "", () => withAdmin(openPayments)),
           btn("Модерация товаров" + (me.pending_items ? ` (${me.pending_items})` : ""), "", () => withAdmin(openModeration)),
+          btn("Промо-коды", "", () => withAdmin(openPromos)),
           btn("Рефералы: кто и кого пригласил", "alt", () => withAdmin(openReferrals)),
           btn("Рассылка всем", "", () => withAdmin(openBroadcast)),
           btn("Настроить бота", "alt", () => withAdmin(setupBot), "gear"));
@@ -866,8 +874,10 @@
       const kids = [];
       kids.push(h("div", { class: "bal slot" },
         h("div", { class: "lab" }, s.active ? "Подписка активна" : "Подписка FlexMarket"),
-        h("div", { class: "num", style: "font-size:" + (s.active ? "18px" : "26px") }, pix("crown", 30), s.active ? "до " + fmtDay(s.until) : `${s.price} ₽`),
-        h("div", { class: "fine" }, s.active ? "Все товары бесплатны, и можно выкладывать свои." : `на ${s.days} дней`)));
+        h("div", { class: "num", style: "font-size:" + (s.active ? "18px" : "26px") }, pix("crown", 30),
+          s.active ? "до " + fmtDay(s.until) : s.discount ? [h("s", { class: "old" }, `${s.price} ₽`), `${s.final} ₽`] : `${s.price} ₽`),
+        h("div", { class: "fine" }, s.active ? "Все товары бесплатны, и можно выкладывать свои." : `на ${s.days} дней` + (s.discount ? `. Скидка ${s.discount.percent}% по промо-коду` : ""))));
+      if (s.active && s.discount) kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Скидка на продление: "), `${s.discount.percent}%, цена ${s.final} ₽ вместо ${s.price} ₽.`));
       kids.push(h("div", { class: "sec" }, "Что даёт подписка"));
       kids.push(h("div", { class: "friends slot" },
         ["Все платные товары — без оплаты звёздами", "Можно выкладывать свои ресурс паки, конфиги и шейдеры", "Твои товары получают пометку «от пользователя с подпиской»"].map((t) => h("div", { class: "friend" }, pix("star", 16), h("span", { style: "margin:0;font-family:inherit;font-size:14px;color:var(--text)" }, t)))));
@@ -876,9 +886,9 @@
         kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Заявка отправлена. "), "Мы проверяем платёж, подписка придёт в течение нескольких часов. Я напишу тебе в чат с ботом."));
       } else {
         kids.push(h("div", { class: "sec" }, s.active ? "Продлить подписку" : "Как оформить"));
-        kids.push(h("p", { class: "how", style: "white-space:pre-line" }, `1. Нажми «Оплатить ${s.price} ₽» и задонать эту сумму.\n2. В сообщении к донату напиши свой юзернейм${uname ? ": @" + uname : ""}.\n3. Вернись сюда и нажми «Я оплатил».`));
+        kids.push(h("p", { class: "how", style: "white-space:pre-line" }, `1. Нажми «Оплатить ${s.final} ₽» и задонать эту сумму.\n2. В сообщении к донату напиши свой юзернейм${uname ? ": @" + uname : ""}.\n3. Вернись сюда и нажми «Я оплатил».`));
         if (!uname) kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "У тебя нет юзернейма. "), "Задай его в настройках Telegram, иначе мы не найдём платёж. В сообщении можно указать ID: " + state.me.profile.id));
-        kids.push(btn(`Оплатить ${s.price} ₽`, "", () => { if (!s.url) { toast("Оплата скоро появится"); return; } openLink(s.url); }));
+        kids.push(btn(`Оплатить ${s.final} ₽`, "", () => { if (!s.url) { toast("Оплата скоро появится"); return; } openLink(s.url); }));
         kids.push(btn("Я оплатил", "alt", async () => {
           const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm("Ты уже отправил донат? Мы проверим платёж вручную.", res)) : confirm("Ты уже отправил донат?");
           if (!ok) return;
@@ -914,7 +924,7 @@
         row.append(
           h("div", { style: "flex:1;min-width:0" },
             h("div", { style: "word-break:break-word" }, (r.username ? "@" + r.username : "без юзернейма") + (r.first_name ? " · " + r.first_name : "")),
-            h("div", { style: "color:var(--hint);font-size:12px" }, `ID ${r.user_id} · нажал ${fmtDT(r.created_at)} · ${r.price} ₽ / ${r.days} дн.`)),
+            h("div", { style: "color:var(--hint);font-size:12px" }, `ID ${r.user_id} · нажал ${fmtDT(r.created_at)} · ${r.price} ₽ / ${r.days} дн.` + (r.promo_code ? ` (было ${r.base_price} ₽, код ${r.promo_code} −${r.promo_percent}%)` : ""))),
           h("div", { style: "display:flex;gap:8px;width:100%" },
             h("button", { class: "btn slot", style: "margin:0;padding:10px", onclick: () => act(r, "grant", row) }, "Выдать"),
             h("button", { class: "btn slot red", style: "margin:0;padding:10px", onclick: () => act(r, "reject", row) }, "Отклонить")));
@@ -959,12 +969,93 @@
       ));
     }
 
+    // ---------- Промо-коды ----------
+    function promoErr(e) {
+      if (e.code === "locked") return `Слишком много попыток. Подожди ${Math.ceil((e.retry || 600) / 60)} мин.`;
+      if (e.code === "not_found") return e.retry ? `Такого кода нет. Подожди ${Math.ceil(e.retry / 60)} мин.` : "Такого кода нет";
+      return ({ already_used: "Ты уже использовал этот код", exhausted: "Этот код уже закончился", inactive: "Этот код отключён", bad_code: "Введи код" })[e.code] || "Не получилось: " + e.message;
+    }
+
+    function openPromo() {
+      const input = h("input", { type: "text", autocomplete: "off", autocapitalize: "characters", spellcheck: "false", placeholder: "Промо-код", style: "text-transform:uppercase" });
+      const out = h("div", { class: "err" });
+      const go = btn("Активировать", "", async () => {
+        const code = input.value.trim();
+        if (!code) { out.style.color = "var(--danger)"; out.textContent = "Введи код"; return; }
+        go.disabled = true; out.textContent = "";
+        try {
+          const r = await api("/api/promo/redeem", { method: "POST", body: JSON.stringify({ code }) });
+          haptic("success");
+          out.style.color = "var(--free)";
+          if (r.kind === "stars") {
+            state.me.profile.balance = r.balance;
+            $("balChip").replaceChildren(pix("star", 16), String(r.balance));
+            out.textContent = `Готово! +${r.value} ★ на баланс.`;
+            if (state.view === "profile") renderProfile();
+          } else {
+            out.textContent = `Готово! Скидка ${r.value}% на подписку. Открой вкладку «Подписка».`;
+            state.sub = null; if (state.view === "sub") loadSub();
+          }
+          input.value = "";
+        } catch (e) { out.style.color = "var(--danger)"; out.textContent = promoErr(e); haptic("error"); }
+        go.disabled = false;
+      });
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Промо-код"),
+        h("p", { class: "how" }, "Введи код: он может добавить звёзды на баланс или дать скидку на подписку."),
+        h("label", { class: "field slot sunk", style: "margin:0;padding:0;color:inherit" }, input),
+        out, go));
+      setTimeout(() => input.focus(), 250);
+    }
+
+    async function openPromos() {
+      let d;
+      try { d = await api("/api/admin/promo"); } catch (e) { toast(adminErr(e)); return; }
+      const field = (el) => h("label", { class: "field slot sunk", style: "margin:0;padding:0;color:inherit" }, el);
+      const code = h("input", { type: "text", maxlength: "32", placeholder: "Код (пусто — придумаю сам)", autocapitalize: "characters", style: "text-transform:uppercase" });
+      const kind = h("select", {}, h("option", { value: "stars" }, "Звёзды на баланс"), h("option", { value: "discount" }, "Скидка на подписку, %"));
+      const value = h("input", { type: "number", min: "1", step: "1", inputmode: "numeric", placeholder: "Сколько звёзд" });
+      const max = h("input", { type: "number", min: "1", step: "1", inputmode: "numeric", placeholder: "Сколько раз можно использовать" });
+      kind.addEventListener("change", () => { value.placeholder = kind.value === "stars" ? "Сколько звёзд" : "Процент скидки (1–99)"; });
+      const err = h("div", { class: "err" });
+      const create = btn("Создать код", "", async () => {
+        create.disabled = true; err.textContent = "";
+        try {
+          const r = await api("/api/admin/promo", { method: "POST", body: JSON.stringify({ code: code.value.trim(), kind: kind.value, value: Number(value.value), max_uses: Number(max.value) }) });
+          haptic("success"); toast("Создан код " + r.code); closeSheet && closeSheet(); openPromos();
+        } catch (e) {
+          create.disabled = false;
+          err.textContent = ({ exists: "Такой код уже есть", bad_code: "Код: 3–32 символа, латиница, цифры, - и _", bad_value: kind.value === "stars" ? "Звёзды: от 1 до 1000" : "Скидка: от 1 до 99%", bad_max: "Использований: от 1 до 100000" })[e.code] || adminErr(e);
+        }
+      });
+      const rows = d.codes.map((c) => h("div", { class: "friend", style: "align-items:flex-start" },
+        h("div", { style: "flex:1;min-width:0" },
+          h("div", { style: "word-break:break-all;font-weight:650" }, c.code),
+          h("div", { style: "color:var(--hint);font-size:12px" }, (c.kind === "stars" ? `+${c.value} ★` : `скидка ${c.value}%`) + ` · использовано ${c.used} из ${c.max_uses}` + (c.active ? "" : " · выключен"))),
+        h("button", { class: "btn slot alt", style: "margin:0;padding:8px 12px;width:auto;font-size:13px", onclick: async () => {
+          try { await api(`/api/admin/promo/${encodeURIComponent(c.code)}/${c.active ? "off" : "on"}`, { method: "POST" }); closeSheet && closeSheet(); openPromos(); } catch (e) { toast(adminErr(e)); }
+        } }, c.active ? "Выключить" : "Включить")));
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Промо-коды"),
+        h("label", {}, "Новый код"), field(code),
+        h("label", {}, "Что даёт"), field(kind),
+        h("label", {}, "Размер"), field(value),
+        h("label", {}, "Сколько раз можно использовать"), field(max),
+        err, create,
+        h("div", { class: "sec" }, "Все коды"),
+        h("div", { class: "friends slot" }, rows.length ? rows : [h("div", { class: "empty", style: "padding:24px" }, "Пока нет ни одного")]),
+        btn("Закрыть", "alt", () => closeSheet && closeSheet())
+      ));
+    }
+
     // ---------- События ----------
     $("logo").append(pix("cube", 24));
     $("fab").append(pix("plus", 26));
     $("search").addEventListener("input", (e) => { state.q = e.target.value; renderCatalog(); });
     $("fab").addEventListener("click", () => withAdmin(() => openEditor(null)));
     $("hbCatalog").addEventListener("click", () => { if (state.view !== "catalog") setView("catalog"); });
+    $("giftBtn").addEventListener("click", openPromo);
     $("hbSub").addEventListener("click", () => { if (state.view !== "sub") setView("sub"); });
     $("hbProfile").addEventListener("click", async () => { if (state.view !== "profile") { setView("profile"); await refreshMe(); } });
     // Вернулся из канала — проверяем подписку сам

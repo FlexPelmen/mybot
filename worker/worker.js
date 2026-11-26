@@ -138,11 +138,12 @@ async function route(request, env, cors) {
   if (path === "/api/sub" && method === "GET") {
     if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
     const until = await subUntil(env, user.id);
+    const disc = await env.DB.prepare("SELECT code, percent FROM fm_discount WHERE user_id = ?").bind(user.id).first();
     const pend = await env.DB.prepare("SELECT created_at FROM fm_payreq WHERE user_id = ? AND status = 'pending'").bind(user.id).first();
     const mine = await env.DB.prepare("SELECT item_id, title, status FROM fm_ugc WHERE author_id = ? ORDER BY item_id DESC LIMIT 20").bind(user.id).all();
     return json({
       active: until > Date.now() / 1000, until,
-      price: Number(env.SUB_PRICE || 299), days: Number(env.SUB_DAYS || 30), url: String(env.DONATION_URL || ""),
+      price: Number(env.SUB_PRICE || 299), final: finalPrice(Number(env.SUB_PRICE || 299), disc), discount: disc ? { percent: disc.percent, code: disc.code } : null, days: Number(env.SUB_DAYS || 30), url: String(env.DONATION_URL || ""),
       username: user.username || "", pending: pend ? pend.created_at : 0, mine: mine.results,
     }, 200, cors);
   }
@@ -153,9 +154,12 @@ async function route(request, env, cors) {
     const had = await env.DB.prepare("SELECT id FROM fm_payreq WHERE user_id = ? AND status = 'pending'").bind(user.id).first();
     if (had) return json({ ok: true, already: true }, 200, cors);
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
+    const base = Number(env.SUB_PRICE || 299);
+    const disc = await env.DB.prepare("SELECT code, percent FROM fm_discount WHERE user_id = ?").bind(user.id).first();
+    const ins = await env.DB.prepare(
       "INSERT INTO fm_payreq (user_id, username, first_name, days, price, status, created_at, handled_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, 0)"
-    ).bind(user.id, user.username || "", String(user.first_name || ""), Number(env.SUB_DAYS || 30), Number(env.SUB_PRICE || 299), now).run();
+    ).bind(user.id, user.username || "", String(user.first_name || ""), Number(env.SUB_DAYS || 30), finalPrice(base, disc), now).run();
+    if (disc) await env.DB.prepare("INSERT INTO fm_payreq_promo (req_id, code, percent, base_price) VALUES (?, ?, ?, ?)").bind(ins.meta.last_row_id, disc.code, disc.percent, base).run();
     await tg(env, "sendMessage", {
       chat_id: user.id,
       text: "✅ <b>Заявка принята</b>\n\nМы проверим твой платёж, и в течение нескольких часов подписка придёт. Я напишу тебе здесь, как только она будет активна.",
@@ -181,6 +185,12 @@ async function route(request, env, cors) {
     await env.DB.prepare("INSERT INTO fm_ugc (item_id, author_id, title, status, created_at) VALUES (?, ?, ?, 'pending', ?)").bind(res.meta.last_row_id, user.id, data.title, now).run();
     await notifyAdmins(env, `🆕 <b>Товар на модерации</b>\n«${esc(data.title)}» от ${esc(user.first_name || "")}${user.username ? " @" + esc(user.username) : ""}.\nПрофиль → Модерация товаров.`);
     return json({ ok: true }, 200, cors);
+  }
+
+  if (path === "/api/promo/redeem" && method === "POST") {
+    if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    const r = await redeemPromo(env, user, await readJson(request));
+    return json(r.body, r.status, cors);
   }
 
   let m = path.match(/^\/api\/img\/(\d+)$/);
@@ -265,9 +275,9 @@ async function route(request, env, cors) {
     }
 
     // ---- Подписки и модерация: только настоящий админ ----
-    if (path.startsWith("/api/admin/payments") || path.startsWith("/api/admin/submissions")) {
+    if (path.startsWith("/api/admin/payments") || path.startsWith("/api/admin/submissions") || path.startsWith("/api/admin/promo")) {
       if (!listed) return json({ error: "forbidden" }, 403, cors);
-      const r = await moderationRoute(env, path, method);
+      const r = await moderationRoute(env, path, method, await readJson(request));
       return json(r.body, r.status, cors);
     }
 
@@ -468,11 +478,13 @@ async function notifyAdmins(env, text) {
 
 const msk = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long", year: "numeric" });
 
-async function moderationRoute(env, path, method) {
+async function moderationRoute(env, path, method, body) {
   const now = Math.floor(Date.now() / 1000);
 
+  if (path.startsWith("/api/admin/promo")) return promoAdmin(env, path, method, body, now);
+
   if (path === "/api/admin/payments" && method === "GET") {
-    const pending = await env.DB.prepare("SELECT id, user_id, username, first_name, days, price, created_at FROM fm_payreq WHERE status = 'pending' ORDER BY created_at").all();
+    const pending = await env.DB.prepare("SELECT r.id, r.user_id, r.username, r.first_name, r.days, r.price, r.created_at, p.code AS promo_code, p.percent AS promo_percent, p.base_price FROM fm_payreq r LEFT JOIN fm_payreq_promo p ON p.req_id = r.id WHERE r.status = 'pending' ORDER BY r.created_at").all();
     const done = await env.DB.prepare("SELECT id, user_id, username, first_name, days, status, created_at, handled_at FROM fm_payreq WHERE status != 'pending' ORDER BY handled_at DESC LIMIT 20").all();
     return { status: 200, body: { pending: pending.results, done: done.results } };
   }
@@ -489,6 +501,8 @@ async function moderationRoute(env, path, method) {
     if (m[2] === "grant") {
       const cur = await subUntil(env, req.user_id);
       const until = Math.max(now, cur) + req.days * 86400;
+      // скидка по промо-коду израсходована вместе с этой оплатой
+      await env.DB.prepare("DELETE FROM fm_discount WHERE user_id = ? AND code IN (SELECT code FROM fm_payreq_promo WHERE req_id = ?)").bind(req.user_id, id).run();
       await env.DB.prepare("INSERT INTO fm_subs (user_id, until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET until = excluded.until").bind(req.user_id, until).run();
       await tg(env, "sendMessage", { chat_id: req.user_id, parse_mode: "HTML", text: `🎉 <b>Подписка активна до ${msk(until)}</b>\n\nТеперь все товары в каталоге бесплатны, а ещё ты можешь выкладывать свои. Открой приложение, раздел «Подписка».` });
       return { status: 200, body: { ok: true, until } };
@@ -522,6 +536,92 @@ async function moderationRoute(env, path, method) {
       ]);
       await tg(env, "sendMessage", { chat_id: g.author_id, parse_mode: "HTML", text: `❌ Твой товар «${esc(g.title)}» не прошёл модерацию. Можешь исправить и отправить ещё раз.` });
     }
+    return { status: 200, body: { ok: true } };
+  }
+  return { status: 404, body: { error: "not_found" } };
+}
+
+// ---------- Промо-коды ----------
+
+const PROMO_MAX_FAILS = 5;
+const PROMO_LOCK_SEC = 600;
+
+// Цена подписки со скидкой, округляем вверх, минимум 1 ₽
+function finalPrice(base, disc) {
+  if (!disc) return base;
+  return Math.max(1, Math.ceil((base * (100 - disc.percent)) / 100));
+}
+
+const normCode = (c) => String(c || "").trim().toUpperCase();
+
+async function redeemPromo(env, user, body) {
+  const code = normCode(body && body.code);
+  const now = Math.floor(Date.now() / 1000);
+  const key = "pr" + user.id;
+  const att = await env.DB.prepare("SELECT fails, lock_until FROM admin_attempts WHERE k = ?").bind(key).first();
+  if (att && att.lock_until > now) return { status: 429, body: { error: "locked", retry: att.lock_until - now } };
+  if (!code || code.length > 40) return { status: 400, body: { error: "bad_code" } };
+
+  const p = await env.DB.prepare("SELECT code, kind, value, max_uses, used, active FROM fm_promo WHERE code = ?").bind(code).first();
+  if (!p) {
+    const fails = (att ? att.fails : 0) + 1;
+    const lock = fails >= PROMO_MAX_FAILS ? now + PROMO_LOCK_SEC : 0;
+    await env.DB.prepare("INSERT INTO admin_attempts (k, fails, lock_until) VALUES (?, ?, ?) ON CONFLICT(k) DO UPDATE SET fails = ?, lock_until = ?")
+      .bind(key, lock ? 0 : fails, lock, lock ? 0 : fails, lock).run();
+    return { status: 404, body: { error: "not_found", retry: lock ? PROMO_LOCK_SEC : 0 } };
+  }
+  if (!p.active) return { status: 409, body: { error: "inactive" } };
+  const used = await env.DB.prepare("SELECT applied FROM fm_promo_uses WHERE code = ? AND user_id = ?").bind(code, user.id).first();
+  if (used) return { status: 409, body: { error: "already_used" } };
+  if (p.used >= p.max_uses) return { status: 409, body: { error: "exhausted" } };
+
+  await upsertUser(env, user, null);
+  const effect =
+    p.kind === "stars"
+      ? env.DB.prepare("UPDATE fm_users SET balance = balance + ? WHERE id = ? AND EXISTS (SELECT 1 FROM fm_promo_uses WHERE code = ? AND user_id = ? AND applied = 0)").bind(p.value, user.id, code, user.id)
+      : env.DB.prepare(
+          "INSERT INTO fm_discount (user_id, code, percent) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM fm_promo_uses WHERE code = ? AND user_id = ? AND applied = 0) ON CONFLICT(user_id) DO UPDATE SET code = excluded.code, percent = excluded.percent WHERE excluded.percent > fm_discount.percent"
+        ).bind(user.id, code, p.value, code, user.id);
+  // Одна транзакция: место в лимите, отметка использования и награда создаются только вместе
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR IGNORE INTO fm_promo_uses (code, user_id, applied, created_at) SELECT ?, ?, 0, ? WHERE EXISTS (SELECT 1 FROM fm_promo WHERE code = ? AND active = 1 AND used < max_uses)").bind(code, user.id, now, code),
+    env.DB.prepare("UPDATE fm_promo SET used = used + 1 WHERE code = ? AND active = 1 AND used < max_uses AND EXISTS (SELECT 1 FROM fm_promo_uses WHERE code = ? AND user_id = ? AND applied = 0)").bind(code, code, user.id),
+    effect,
+    env.DB.prepare("UPDATE fm_promo_uses SET applied = 1 WHERE code = ? AND user_id = ? AND applied = 0").bind(code, user.id),
+  ]);
+  const done = await env.DB.prepare("SELECT applied FROM fm_promo_uses WHERE code = ? AND user_id = ?").bind(code, user.id).first();
+  if (!done) return { status: 409, body: { error: "exhausted" } };
+  const bal = (await env.DB.prepare("SELECT balance FROM fm_users WHERE id = ?").bind(user.id).first()).balance;
+  return { status: 200, body: { ok: true, kind: p.kind, value: p.value, balance: bal } };
+}
+
+async function promoAdmin(env, path, method, body, now) {
+  if (path === "/api/admin/promo" && method === "GET") {
+    const rows = await env.DB.prepare("SELECT code, kind, value, max_uses, used, active, created_at FROM fm_promo ORDER BY created_at DESC, rowid DESC LIMIT 100").all();
+    return { status: 200, body: { codes: rows.results.map((r) => ({ ...r, active: !!r.active })) } };
+  }
+  if (path === "/api/admin/promo" && method === "POST") {
+    const b = body || {};
+    let code = normCode(b.code);
+    if (!code) {
+      const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      const rnd = crypto.getRandomValues(new Uint8Array(8));
+      code = [...rnd].map((x) => abc[x % abc.length]).join("");
+    }
+    if (!/^[A-Z0-9_-]{3,32}$/.test(code)) return { status: 400, body: { error: "bad_code" } };
+    const kind = b.kind === "stars" || b.kind === "discount" ? b.kind : null;
+    if (!kind) return { status: 400, body: { error: "bad_kind" } };
+    const value = Math.floor(Number(b.value));
+    if (!Number.isFinite(value) || value < 1 || value > (kind === "stars" ? 1000 : 99)) return { status: 400, body: { error: "bad_value" } };
+    const max = Math.floor(Number(b.max_uses));
+    if (!Number.isFinite(max) || max < 1 || max > 100000) return { status: 400, body: { error: "bad_max" } };
+    const res = await env.DB.prepare("INSERT OR IGNORE INTO fm_promo (code, kind, value, max_uses, used, active, created_at) VALUES (?, ?, ?, ?, 0, 1, ?)").bind(code, kind, value, max, now).run();
+    if (!(res.meta.changes > 0)) return { status: 409, body: { error: "exists" } };
+    return { status: 200, body: { ok: true, code } };
+  }
+  const m = path.match(/^\/api\/admin\/promo\/([A-Za-z0-9_-]{3,32})\/(on|off)$/);
+  if (m && method === "POST") {
+    await env.DB.prepare("UPDATE fm_promo SET active = ? WHERE code = ?").bind(m[2] === "on" ? 1 : 0, normCode(m[1])).run();
     return { status: 200, body: { ok: true } };
   }
   return { status: 404, body: { error: "not_found" } };
@@ -1024,6 +1124,10 @@ async function ensureSchema(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_subs (user_id INTEGER PRIMARY KEY, until INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_payreq (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', days INTEGER NOT NULL, price INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL DEFAULT 0, handled_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_ugc (item_id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_promo (code TEXT PRIMARY KEY, kind TEXT NOT NULL, value INTEGER NOT NULL, max_uses INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_promo_uses (code TEXT NOT NULL, user_id INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (code, user_id))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_discount (user_id INTEGER PRIMARY KEY, code TEXT NOT NULL, percent INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_payreq_promo (req_id INTEGER PRIMARY KEY, code TEXT NOT NULL, percent INTEGER NOT NULL, base_price INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_blocked (user_id INTEGER PRIMARY KEY)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_broadcasts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, btn_text TEXT NOT NULL DEFAULT '', btn_url TEXT NOT NULL DEFAULT '', total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'running', created_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
