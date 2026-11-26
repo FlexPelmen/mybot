@@ -91,6 +91,8 @@
     .tag.off { left: auto; right: 12px; color: var(--hint); }
     .name { font-weight: 650; font-size: 14px; padding: 9px 4px 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 3em; }
     .dl { display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px; color: var(--hint); font-size: 12px; }
+    .by { color: var(--gold); font-size: 11.5px; padding-top: 0; }
+    .card.top1 .by { color: var(--gold-ink); }
     .empty { grid-column: 1 / -1; text-align: center; color: var(--hint); padding: 46px 16px; }
     .empty svg { margin: 0 auto 12px; opacity: .8; }
 
@@ -98,7 +100,7 @@
     .hotbar {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--bg);
       border-top: 4px solid var(--edge); padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
-      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
     }
     .hb { border: 0; font: inherit; color: var(--text); padding: 10px 4px 8px; display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
     .hb.on { outline: 3px solid #fff; outline-offset: -3px; background: var(--panel2); }
@@ -197,6 +199,7 @@
       <div class="grid" id="grid"></div>
     </section>
     <section class="view" id="vProfile" hidden></section>
+    <section class="view" id="vSub" hidden></section>
     <section class="view" id="vMsg" hidden></section>
   </main>
 
@@ -204,6 +207,7 @@
   <nav class="hotbar" id="hotbar" hidden>
     <button class="hb slot" id="hbCatalog"></button>
     <button class="hb slot" id="hbProfile"></button>
+    <button class="hb slot" id="hbSub"></button>
   </nav>
 
   <script>
@@ -229,6 +233,7 @@
       head: { g: [".hhhhhh.", "hhhhhhhh", "ssssssss", "sessses.", "ssssssss", "sssmmsss", ".ssssss.", "..ssss.."], p: { h: "#6b4423", s: "#e0ac82", e: "#2b1a3a", m: "#b4694a" } },
       plus: { g: ["...pp...", "...pp...", "...pp...", "pppppppp", "pppppppp", "...pp...", "...pp...", "...pp..."], p: { p: "currentColor" } },
       down: { g: ["...dd...", "...dd...", "...dd...", "dddddddd", ".dddddd.", "..dddd..", "...dd...", "........"], p: { d: "currentColor" } },
+      crown: { g: ["y..yy..y", "yy.yy.yy", "yyyyyyyy", "yyyyyyyy", "yyrryyrr".slice(0,8), "yyyyyyyy", "yyyyyyyy", "........"], p: { y: "#ffc93c", r: "#ff6b6b" } },
       lock: { g: ["..llll..", ".l....l.", ".l....l.", "gggggggg", "ggggkggg", "ggggkggg", "gggggggg", "gggggggg"], p: { l: "#aeb6cc", g: "#ffc93c", k: "#3a2700" } },
       warn: { g: ["...rr...", "...rr...", "..rrrr..", "..rwwr..", ".rrwwrr.", ".rrrrrr.", "rrrwwrrr", "rrrrrrrr"], p: { r: "#ff6b6b", w: "#fff" } },
     };
@@ -330,7 +335,7 @@
         const res = await api("/api/items");
         state.items = sortItems(res.items || []);
         state.loading = false;
-        setView(state.view === "profile" ? "profile" : "catalog");
+        setView(state.view === "profile" || state.view === "sub" ? state.view : "catalog");
       } catch (e) {
         if (e.code === "subscribe") { state.me = { ...(state.me || {}), subscribed: false }; return showGate(state.me); }
         showMsg("warn", "Нет связи с сервером", "Проверь интернет и нажми «Повторить». Код ошибки: " + (e.code || e.name || e.message), [btn("Повторить", "", () => load())]);
@@ -350,7 +355,7 @@
     }
 
     function show(id) {
-      for (const v of ["vCatalog", "vProfile", "vMsg"]) $(v).hidden = v !== id;
+      for (const v of ["vCatalog", "vProfile", "vSub", "vMsg"]) $(v).hidden = v !== id;
     }
 
     function showMsg(icon, title, text, buttons) {
@@ -390,10 +395,12 @@
       $("hbCatalog").replaceChildren(pix("chest", 26), "Каталог");
       $("hbProfile").replaceChildren(pix("head", 26), "Профиль");
       $("hbCatalog").classList.toggle("on", v === "catalog");
+      $("hbSub").replaceChildren(pix("crown", 26), "Подписка");
       $("hbProfile").classList.toggle("on", v === "profile");
+      $("hbSub").classList.toggle("on", v === "sub");
       $("fab").hidden = !(me.admin && v === "catalog");
-      show(v === "catalog" ? "vCatalog" : "vProfile");
-      if (v === "catalog") renderCatalog(); else renderProfile();
+      show(v === "catalog" ? "vCatalog" : v === "sub" ? "vSub" : "vProfile");
+      if (v === "catalog") renderCatalog(); else if (v === "sub") loadSub(); else renderProfile();
       window.scrollTo(0, 0);
     }
 
@@ -431,7 +438,8 @@
         h("span", { class: "tag px" + (it.price > 0 && !it.owned ? " paid" : "") }, it.price === 0 ? "FREE" : it.owned ? "OK" : it.price + " ★"),
         it.hidden ? h("span", { class: "tag off" }, "скрыт") : null,
         h("div", { class: "name" }, it.title),
-        h("div", { class: "dl" }, pix("down", 12), dlWord(it.downloads || 0))
+        h("div", { class: "dl" }, pix("down", 12), dlWord(it.downloads || 0)),
+        it.by_user ? h("div", { class: "dl by" }, "от пользователя с подпиской") : null
       );
     }
 
@@ -448,7 +456,7 @@
         h("div", { class: "pad" },
           h("div", { class: "me slot" },
             h("div", { class: "ava" }, photo ? h("img", { src: photo, alt: "" }) : pix("head", 40)),
-            h("div", {}, h("h2", {}, name), h("p", {}, (p.username ? "@" + p.username + " · " : "") + "ID " + p.id))
+            h("div", {}, h("h2", {}, name), h("p", {}, (p.username ? "@" + p.username + " · " : "") + "ID " + p.id + (me.pro && me.pro.active ? " · подписка до " + fmtDay(me.pro.until) : "")))
           ),
           h("div", { class: "bal slot" },
             h("div", { class: "lab" }, "Твой баланс"),
@@ -480,6 +488,8 @@
       if (me.listed) {
         pad2.append(h("div", { class: "sec" }, "Для администратора"),
           h("div", { class: "how" }, "Если бот не отвечает в чате или не пускает по подписке, нажми «Настроить бота». Он сам включит команды, меню и проверит доступ к каналу."),
+          btn("Заявки на подписку" + (me.pending_payments ? ` (${me.pending_payments})` : ""), "", () => withAdmin(openPayments)),
+          btn("Модерация товаров" + (me.pending_items ? ` (${me.pending_items})` : ""), "", () => withAdmin(openModeration)),
           btn("Рефералы: кто и кого пригласил", "alt", () => withAdmin(openReferrals)),
           btn("Рассылка всем", "", () => withAdmin(openBroadcast)),
           btn("Настроить бота", "alt", () => withAdmin(setupBot), "gear"));
@@ -646,6 +656,7 @@
             h("span", { class: "slot" }, pix(catOf(it.category).icon, 16), catOf(it.category).name),
             h("span", { class: "slot" }, pix("down", 14), `${it.downloads || 0}`)
           ),
+          it.by_user ? h("p", { class: "how", style: "margin:12px 0 0;color:var(--gold)" }, "Товар от пользователя с подпиской") : null,
           it.description ? h("div", { class: "desc" }, it.description) : null,
           action, hint, admin
         ),
@@ -764,7 +775,7 @@
       });
     }
 
-    function openEditor(item) {
+    function openEditor(item, submit) {
       const isNew = !item;
       const d = { category: item ? item.category : state.cat, title: item ? item.title : "", description: item ? item.description : "", price: item ? item.price : 0, link: item ? item.link : "", hidden: item ? item.hidden : false };
       let newImage; // undefined — не менять, null — удалить, строка — новая
@@ -792,12 +803,20 @@
       const link = h("input", { type: "url", value: d.link, placeholder: "https://… (Яндекс Диск, Mega, Google Drive)" });
       const hidden = h("input", { type: "checkbox" }); hidden.checked = d.hidden;
       const saveBtn = btn(isNew ? "Добавить" : "Сохранить", "", async () => {
-        const body = { category: category.value, title: title.value.trim(), description: desc.value.trim(), price: Math.max(0, Math.floor(Number(price.value) || 0)), link: link.value.trim(), hidden: hidden.checked };
+        const body = { category: category.value, title: title.value.trim(), description: desc.value.trim(), price: submit ? 0 : Math.max(0, Math.floor(Number(price.value) || 0)), link: link.value.trim(), hidden: submit ? false : hidden.checked };
+        if (submit && !body.link) { toast("Добавь ссылку на файл"); return; }
         if (!body.title) { toast("Введи название"); return; }
         if (body.link && !safeUrl(body.link)) { toast("Ссылка должна начинаться с https://"); return; }
         if (newImage !== undefined) body.image = newImage;
         saveBtn.disabled = true;
         try {
+          if (submit) {
+            await api("/api/items/submit", { method: "POST", body: JSON.stringify(body) });
+            haptic("success"); closeSheet && closeSheet();
+            toast("Товар отправлен на модерацию");
+            loadSub();
+            return;
+          }
           if (isNew) await api("/api/admin/items", { method: "POST", body: JSON.stringify(body) });
           else await api(`/api/admin/items/${item.id}`, { method: "PUT", body: JSON.stringify(body) });
           haptic("success");
@@ -807,22 +826,136 @@
           await load();
         } catch (e) {
           saveBtn.disabled = false;
-          toast(adminErr(e));
-          if (e.code === "bad_code") { closeSheet && closeSheet(); withAdmin(() => openEditor(item)); }
+          toast(submit ? subErr(e) : adminErr(e));
+          if (!submit && e.code === "bad_code") { closeSheet && closeSheet(); withAdmin(() => openEditor(item)); }
         }
       });
       const removeImg = !isNew && item.has_image ? btn("Убрать картинку", "alt", () => { newImage = null; paintPreview(); }) : null;
 
       openSheet(h("div", { class: "body" },
-        h("h2", {}, isNew ? "Новый товар" : "Редактирование"),
+        h("h2", {}, submit ? "Свой товар" : isNew ? "Новый товар" : "Редактирование"),
         h("label", {}, "Картинка"), preview, removeImg,
         h("label", {}, "Раздел"), field(category),
         h("label", {}, "Название"), field(title),
         h("label", {}, "Описание"), field(desc),
-        h("label", {}, "Цена в звёздах (0 — бесплатно)"), field(price),
+        submit ? null : h("label", {}, "Цена в звёздах (0 — бесплатно)"), submit ? null : field(price),
         h("label", {}, "Ссылка на файл"), field(link),
-        h("label", { class: "check" }, hidden, h("span", {}, "Скрыть из каталога")),
+        submit ? h("p", { class: "how", style: "margin:12px 2px 0" }, "Товар будет бесплатным. Он появится в каталоге после проверки администратором.") : h("label", { class: "check" }, hidden, h("span", {}, "Скрыть из каталога")),
         saveBtn
+      ));
+    }
+
+    // ---------- Подписка ----------
+    const fmtDay = (ts) => { try { return new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); } catch (e) { return ""; } };
+    const STATUS = { pending: "на проверке", approved: "опубликован", rejected: "отклонён" };
+    function subErr(e) {
+      return ({ need_sub: "Нужна активная подписка", too_many_pending: "Уже 5 товаров на проверке. Дождись ответа", link_required: "Добавь ссылку на файл", bad_title: "Название: от 1 до 80 символов", bad_link: "Ссылка должна начинаться с https://", image_too_big: "Картинка слишком большая" })[e.code] || "Не получилось: " + e.message;
+    }
+
+    async function loadSub() {
+      const root = $("vSub");
+      if (!state.sub) root.replaceChildren(h("div", { class: "empty" }, "Загружаю…"));
+      try { state.sub = await api("/api/sub"); } catch (e) { root.replaceChildren(h("div", { class: "empty" }, "Не получилось загрузить. Попробуй позже.")); return; }
+      if (state.view === "sub") renderSub();
+    }
+
+    function renderSub() {
+      const s = state.sub; const root = $("vSub");
+      const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+      const uname = s.username || (tgUser && tgUser.username) || "";
+      const kids = [];
+      kids.push(h("div", { class: "bal slot" },
+        h("div", { class: "lab" }, s.active ? "Подписка активна" : "Подписка FlexMarket"),
+        h("div", { class: "num", style: "font-size:" + (s.active ? "18px" : "26px") }, pix("crown", 30), s.active ? "до " + fmtDay(s.until) : `${s.price} ₽`),
+        h("div", { class: "fine" }, s.active ? "Все товары бесплатны, и можно выкладывать свои." : `на ${s.days} дней`)));
+      kids.push(h("div", { class: "sec" }, "Что даёт подписка"));
+      kids.push(h("div", { class: "friends slot" },
+        ["Все платные товары — без оплаты звёздами", "Можно выкладывать свои ресурс паки, конфиги и шейдеры", "Твои товары получают пометку «от пользователя с подпиской»"].map((t) => h("div", { class: "friend" }, pix("star", 16), h("span", { style: "margin:0;font-family:inherit;font-size:14px;color:var(--text)" }, t)))));
+
+      if (s.pending) {
+        kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "Заявка отправлена. "), "Мы проверяем платёж, подписка придёт в течение нескольких часов. Я напишу тебе в чат с ботом."));
+      } else {
+        kids.push(h("div", { class: "sec" }, s.active ? "Продлить подписку" : "Как оформить"));
+        kids.push(h("p", { class: "how", style: "white-space:pre-line" }, `1. Нажми «Оплатить ${s.price} ₽» и задонать эту сумму.\n2. В сообщении к донату напиши свой юзернейм${uname ? ": @" + uname : ""}.\n3. Вернись сюда и нажми «Я оплатил».`));
+        if (!uname) kids.push(h("div", { class: "note warn slot sunk" }, h("b", {}, "У тебя нет юзернейма. "), "Задай его в настройках Telegram, иначе мы не найдём платёж. В сообщении можно указать ID: " + state.me.profile.id));
+        kids.push(btn(`Оплатить ${s.price} ₽`, "", () => { if (!s.url) { toast("Оплата скоро появится"); return; } openLink(s.url); }));
+        kids.push(btn("Я оплатил", "alt", async () => {
+          const ok = tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm("Ты уже отправил донат? Мы проверим платёж вручную.", res)) : confirm("Ты уже отправил донат?");
+          if (!ok) return;
+          try { await api("/api/sub/paid", { method: "POST" }); haptic("success"); toast("Заявка отправлена"); loadSub(); }
+          catch (e) { toast("Не получилось: " + e.message); }
+        }));
+      }
+
+      if (s.active) {
+        kids.push(h("div", { class: "sec" }, "Мои товары"));
+        kids.push(btn("Добавить свой товар", "", () => openEditor(null, true)));
+        if (s.mine.length) kids.push(h("div", { class: "friends slot" }, s.mine.map((x) => h("div", { class: "friend" }, h("span", { style: "margin:0;font-family:inherit;font-size:14px;color:var(--text);flex:1" }, x.title), h("span", { style: x.status === "approved" ? "" : "color:var(--hint)" }, STATUS[x.status] || x.status)))));
+      }
+      root.replaceChildren(h("div", { class: "pad" }, kids));
+    }
+
+    // ---------- Заявки на подписку и модерация товаров (только настоящий админ) ----------
+    const fmtDT = (ts) => { try { return new Date(ts * 1000).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+
+    async function openPayments() {
+      let d;
+      try { d = await api("/api/admin/payments"); } catch (e) { toast(adminErr(e)); return; }
+      const act = async (r, what, row) => {
+        if (what === "reject" && !(tg && tg.showConfirm ? await new Promise((res) => tg.showConfirm("Отклонить заявку?", res)) : confirm("Отклонить заявку?"))) return;
+        try {
+          const x = await api(`/api/admin/payments/${r.id}/${what}`, { method: "POST" });
+          haptic("success"); toast(what === "grant" ? "Подписка выдана до " + fmtDay(x.until) : "Заявка отклонена");
+          row.remove(); refreshMe();
+        } catch (e) { toast(e.code === "already_handled" ? "Уже обработано" : adminErr(e)); }
+      };
+      const rows = d.pending.map((r) => {
+        const row = h("div", { class: "friend", style: "flex-wrap:wrap;gap:8px" });
+        row.append(
+          h("div", { style: "flex:1;min-width:0" },
+            h("div", { style: "word-break:break-word" }, (r.username ? "@" + r.username : "без юзернейма") + (r.first_name ? " · " + r.first_name : "")),
+            h("div", { style: "color:var(--hint);font-size:12px" }, `ID ${r.user_id} · нажал ${fmtDT(r.created_at)} · ${r.price} ₽ / ${r.days} дн.`)),
+          h("div", { style: "display:flex;gap:8px;width:100%" },
+            h("button", { class: "btn slot", style: "margin:0;padding:10px", onclick: () => act(r, "grant", row) }, "Выдать"),
+            h("button", { class: "btn slot red", style: "margin:0;padding:10px", onclick: () => act(r, "reject", row) }, "Отклонить")));
+        return row;
+      });
+      const done = d.done.map((r) => h("div", { class: "friend" }, h("div", { style: "flex:1;min-width:0" }, (r.username ? "@" + r.username : "ID " + r.user_id), h("div", { style: "color:var(--hint);font-size:12px" }, fmtDT(r.handled_at))), h("span", { style: "color:var(--hint)" }, r.status === "granted" ? "выдана" : "отклонена")));
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Заявки на подписку"),
+        h("p", { class: "how" }, "Сверь донат в DonationAlerts: сумма и юзернейм из сообщения. Если всё сходится, нажми «Выдать»."),
+        h("div", { class: "friends slot" }, rows.length ? rows : [h("div", { class: "empty", style: "padding:24px" }, "Новых заявок нет")]),
+        done.length ? [h("div", { class: "sec" }, "Недавно обработанные"), h("div", { class: "friends slot" }, done)] : null,
+        btn("Закрыть", "alt", () => closeSheet && closeSheet())
+      ));
+    }
+
+    async function openModeration() {
+      let d;
+      try { d = await api("/api/admin/submissions"); } catch (e) { toast(adminErr(e)); return; }
+      const act = async (r, what, card) => {
+        try { await api(`/api/admin/submissions/${r.id}/${what}`, { method: "POST" }); haptic("success"); toast(what === "approve" ? "Опубликовано" : "Отклонено"); card.remove(); refreshMe(); }
+        catch (e) { toast(e.code === "already_handled" ? "Уже обработано" : adminErr(e)); }
+      };
+      const cards = d.pending.map((r) => {
+        const card = h("div", { class: "slot", style: "padding:12px;margin-bottom:12px" });
+        const link = /^https?:\/\//i.test(r.link || "") ? r.link : "";
+        card.append(
+          r.has_image ? h("img", { class: "thumb", src: `${API_URL}/api/img/${r.id}`, alt: "", style: "margin-bottom:10px" }) : null,
+          h("div", { style: "font-weight:700;word-break:break-word" }, r.title),
+          h("div", { style: "color:var(--hint);font-size:12.5px;margin:2px 0 8px" }, `${catOf(r.category).name} · от ${r.username ? "@" + r.username : r.first_name || "ID " + r.author_id} · ${fmtDT(r.created_at)}`),
+          r.description ? h("div", { class: "desc", style: "margin:0 0 8px" }, r.description) : null,
+          link ? h("button", { class: "btn slot alt", style: "margin:0 0 8px;padding:10px", onclick: () => openLink(link) }, "Проверить файл по ссылке") : null,
+          h("div", { style: "display:flex;gap:8px" },
+            h("button", { class: "btn slot", style: "margin:0;padding:10px", onclick: () => act(r, "approve", card) }, "Одобрить"),
+            h("button", { class: "btn slot red", style: "margin:0;padding:10px", onclick: () => act(r, "reject", card) }, "Отклонить")));
+        return card;
+      });
+      openSheet(h("div", { class: "body" },
+        h("h2", {}, "Модерация товаров"),
+        h("p", { class: "how" }, "Товары от подписчиков. После одобрения товар появится в каталоге с пометкой, автор получит сообщение."),
+        cards.length ? cards : h("div", { class: "empty" }, "Нечего проверять"),
+        btn("Закрыть", "alt", () => closeSheet && closeSheet())
       ));
     }
 
@@ -832,12 +965,14 @@
     $("search").addEventListener("input", (e) => { state.q = e.target.value; renderCatalog(); });
     $("fab").addEventListener("click", () => withAdmin(() => openEditor(null)));
     $("hbCatalog").addEventListener("click", () => { if (state.view !== "catalog") setView("catalog"); });
+    $("hbSub").addEventListener("click", () => { if (state.view !== "sub") setView("sub"); });
     $("hbProfile").addEventListener("click", async () => { if (state.view !== "profile") { setView("profile"); await refreshMe(); } });
     // Вернулся из канала — проверяем подписку сам
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "visible") return;
       if (state.view === "msg" && state.me && state.me.auth && !state.me.subscribed) load(true);
       else if (state.view === "profile") refreshMe();
+      else if (state.view === "sub") loadSub();
     });
 
     showMsg("cube", "Загружаю…", "Подожди секунду.");

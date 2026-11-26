@@ -89,7 +89,13 @@ async function route(request, env, cors) {
       out.subscribed = listed || sub.ok;
       if (listed && sub.error) out.sub_error = sub.error;
       if (out.subscribed) out.profile = await getProfile(env, user);
+      if (out.subscribed) {
+        const until = await subUntil(env, user.id);
+        out.pro = { active: until > Date.now() / 1000, until };
+      }
       if (listed) {
+        out.pending_payments = (await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_payreq WHERE status = 'pending'").first()).c;
+        out.pending_items = (await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_ugc WHERE status = 'pending'").first()).c;
         const bs = await autoSetupBot(env);
         if (bs) out.bot_setup = bs;
       }
@@ -100,8 +106,9 @@ async function route(request, env, cors) {
   if (path === "/api/items" && method === "GET") {
     if (!(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
     const rows = await env.DB.prepare(
-      "SELECT id, category, title, description, price, link, hidden, downloads, updated_at, (image != '') AS has_image FROM items ORDER BY downloads DESC, id DESC"
+      "SELECT i.id, i.category, i.title, i.description, i.price, i.link, i.hidden, i.downloads, i.updated_at, (i.image != '') AS has_image, g.item_id AS by_user FROM items i LEFT JOIN fm_ugc g ON g.item_id = i.id WHERE g.status IS NULL OR g.status = 'approved' ORDER BY i.downloads DESC, i.id DESC"
     ).all();
+    const pro = user ? (await subUntil(env, user.id)) > Date.now() / 1000 : false;
     const own = new Set();
     if (user) {
       const pr = await env.DB.prepare("SELECT item_id FROM fm_purchases WHERE user_id = ? AND charged = 1").bind(user.id).all();
@@ -116,14 +123,64 @@ async function route(request, env, cors) {
         description: r.description,
         price: r.price,
         // ссылка на платный товар видна только админу и тем, кто его купил
-        owned: r.price === 0 || listed || own.has(r.id),
-        link: r.price === 0 || listed || own.has(r.id) ? r.link : "",
+        owned: r.price === 0 || listed || pro || own.has(r.id),
+        link: r.price === 0 || listed || pro || own.has(r.id) ? r.link : "",
+        by_user: !!r.by_user,
         hidden: !!r.hidden,
         downloads: r.downloads,
         has_image: !!r.has_image,
         v: r.updated_at,
       }));
     return json({ items }, 200, cors);
+  }
+
+  // ---------- Подписка и товары от подписчиков ----------
+  if (path === "/api/sub" && method === "GET") {
+    if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    const until = await subUntil(env, user.id);
+    const pend = await env.DB.prepare("SELECT created_at FROM fm_payreq WHERE user_id = ? AND status = 'pending'").bind(user.id).first();
+    const mine = await env.DB.prepare("SELECT item_id, title, status FROM fm_ugc WHERE author_id = ? ORDER BY item_id DESC LIMIT 20").bind(user.id).all();
+    return json({
+      active: until > Date.now() / 1000, until,
+      price: Number(env.SUB_PRICE || 299), days: Number(env.SUB_DAYS || 30), url: String(env.DONATION_URL || ""),
+      username: user.username || "", pending: pend ? pend.created_at : 0, mine: mine.results,
+    }, 200, cors);
+  }
+
+  if (path === "/api/sub/paid" && method === "POST") {
+    if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    await upsertUser(env, user, null);
+    const had = await env.DB.prepare("SELECT id FROM fm_payreq WHERE user_id = ? AND status = 'pending'").bind(user.id).first();
+    if (had) return json({ ok: true, already: true }, 200, cors);
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      "INSERT INTO fm_payreq (user_id, username, first_name, days, price, status, created_at, handled_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, 0)"
+    ).bind(user.id, user.username || "", String(user.first_name || ""), Number(env.SUB_DAYS || 30), Number(env.SUB_PRICE || 299), now).run();
+    await tg(env, "sendMessage", {
+      chat_id: user.id,
+      text: "✅ <b>Заявка принята</b>\n\nМы проверим твой платёж, и в течение нескольких часов подписка придёт. Я напишу тебе здесь, как только она будет активна.",
+      parse_mode: "HTML",
+    });
+    await notifyAdmins(env, `💳 <b>Новая заявка на подписку</b>\n${esc(user.first_name || "Без имени")}${user.username ? " @" + esc(user.username) : ""} (ID ${user.id}) нажал «Я оплатил».\nОткрой в приложении: Профиль → Заявки на подписку.`);
+    return json({ ok: true }, 200, cors);
+  }
+
+  if (path === "/api/items/submit" && method === "POST") {
+    if (!user || !(await canView(env, user, listed))) return json({ error: "subscribe" }, 403, cors);
+    if (!((await subUntil(env, user.id)) > Date.now() / 1000)) return json({ error: "need_sub" }, 403, cors);
+    const data = validateItem(await readJson(request), false);
+    if (data.error) return json({ error: data.error }, 400, cors);
+    if (!data.link) return json({ error: "link_required" }, 400, cors);
+    const pend = await env.DB.prepare("SELECT COUNT(*) AS c FROM fm_ugc WHERE author_id = ? AND status = 'pending'").bind(user.id).first();
+    if (pend.c >= 5) return json({ error: "too_many_pending" }, 429, cors);
+    const now = Math.floor(Date.now() / 1000);
+    // товар пользователя всегда бесплатный и скрыт, пока админ не одобрит
+    const res = await env.DB.prepare(
+      "INSERT INTO items (category, title, description, price, link, image, hidden, downloads, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, 1, 0, ?, ?)"
+    ).bind(data.category, data.title, data.description, data.link, data.image || "", now, now).run();
+    await env.DB.prepare("INSERT INTO fm_ugc (item_id, author_id, title, status, created_at) VALUES (?, ?, ?, 'pending', ?)").bind(res.meta.last_row_id, user.id, data.title, now).run();
+    await notifyAdmins(env, `🆕 <b>Товар на модерации</b>\n«${esc(data.title)}» от ${esc(user.first_name || "")}${user.username ? " @" + esc(user.username) : ""}.\nПрофиль → Модерация товаров.`);
+    return json({ ok: true }, 200, cors);
   }
 
   let m = path.match(/^\/api\/img\/(\d+)$/);
@@ -153,7 +210,7 @@ async function route(request, env, cors) {
     const id = Number(m[1]);
     const it = await env.DB.prepare("SELECT price FROM items WHERE id = ?").bind(id).first();
     if (!it) return json({ error: "not_found" }, 404, cors);
-    if (it.price > 0 && !listed) {
+    if (it.price > 0 && !listed && !((await subUntil(env, user.id)) > Date.now() / 1000)) {
       const got = await env.DB.prepare("SELECT 1 AS x FROM fm_purchases WHERE user_id = ? AND item_id = ? AND charged = 1").bind(user.id, id).first();
       if (!got) return json({ error: "not_owned" }, 403, cors);
     }
@@ -170,6 +227,10 @@ async function route(request, env, cors) {
     if (!it || (it.hidden && !listed)) return json({ error: "not_found" }, 404, cors);
     if (it.price <= 0) return json({ error: "free_item" }, 400, cors);
     await upsertUser(env, user, null);
+    if ((await subUntil(env, user.id)) > Date.now() / 1000) {
+      const b0 = await env.DB.prepare("SELECT balance FROM fm_users WHERE id = ?").bind(user.id).first();
+      return json({ ok: true, already: true, pro: true, link: it.link, balance: b0.balance }, 200, cors);
+    }
     const owned = () => env.DB.prepare("SELECT 1 AS x FROM fm_purchases WHERE user_id = ? AND item_id = ? AND charged = 1").bind(user.id, id).first();
     const balance = async () => (await env.DB.prepare("SELECT balance FROM fm_users WHERE id = ?").bind(user.id).first()).balance;
     if (await owned()) return json({ ok: true, already: true, link: it.link, balance: await balance() }, 200, cors);
@@ -201,6 +262,13 @@ async function route(request, env, cors) {
     if (path === "/api/admin/setup-bot" && method === "POST") {
       if (!listed) return json({ error: "forbidden" }, 403, cors);
       return json(await setupBot(env), 200, cors);
+    }
+
+    // ---- Подписки и модерация: только настоящий админ ----
+    if (path.startsWith("/api/admin/payments") || path.startsWith("/api/admin/submissions")) {
+      if (!listed) return json({ error: "forbidden" }, 403, cors);
+      const r = await moderationRoute(env, path, method);
+      return json(r.body, r.status, cors);
     }
 
     // ---- Кто кого приглашал: только настоящий админ ----
@@ -384,6 +452,79 @@ async function referralsReport(env) {
       inviter: { id: x.inviter_id, name: x.inviter_name, username: x.inviter_username },
     })),
   };
+}
+
+// ---------- Подписка: заявки и модерация ----------
+
+async function subUntil(env, userId) {
+  const r = await env.DB.prepare("SELECT until FROM fm_subs WHERE user_id = ?").bind(userId).first();
+  return r ? r.until : 0;
+}
+
+async function notifyAdmins(env, text) {
+  const ids = String(env.ADMIN_IDS || "").split(",").map((x) => x.trim()).filter(Boolean);
+  for (const id of ids) await tg(env, "sendMessage", { chat_id: Number(id), text, parse_mode: "HTML" });
+}
+
+const msk = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long", year: "numeric" });
+
+async function moderationRoute(env, path, method) {
+  const now = Math.floor(Date.now() / 1000);
+
+  if (path === "/api/admin/payments" && method === "GET") {
+    const pending = await env.DB.prepare("SELECT id, user_id, username, first_name, days, price, created_at FROM fm_payreq WHERE status = 'pending' ORDER BY created_at").all();
+    const done = await env.DB.prepare("SELECT id, user_id, username, first_name, days, status, created_at, handled_at FROM fm_payreq WHERE status != 'pending' ORDER BY handled_at DESC LIMIT 20").all();
+    return { status: 200, body: { pending: pending.results, done: done.results } };
+  }
+
+  let m = path.match(/^\/api\/admin\/payments\/(\d+)\/(grant|reject)$/);
+  if (m && method === "POST") {
+    const id = Number(m[1]);
+    const req = await env.DB.prepare("SELECT * FROM fm_payreq WHERE id = ?").bind(id).first();
+    if (!req) return { status: 404, body: { error: "not_found" } };
+    // условие status = 'pending' защищает от двойного нажатия
+    const upd = await env.DB.prepare("UPDATE fm_payreq SET status = ?, handled_at = ? WHERE id = ? AND status = 'pending'")
+      .bind(m[2] === "grant" ? "granted" : "rejected", now, id).run();
+    if (!(upd.meta.changes > 0)) return { status: 409, body: { error: "already_handled" } };
+    if (m[2] === "grant") {
+      const cur = await subUntil(env, req.user_id);
+      const until = Math.max(now, cur) + req.days * 86400;
+      await env.DB.prepare("INSERT INTO fm_subs (user_id, until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET until = excluded.until").bind(req.user_id, until).run();
+      await tg(env, "sendMessage", { chat_id: req.user_id, parse_mode: "HTML", text: `🎉 <b>Подписка активна до ${msk(until)}</b>\n\nТеперь все товары в каталоге бесплатны, а ещё ты можешь выкладывать свои. Открой приложение, раздел «Подписка».` });
+      return { status: 200, body: { ok: true, until } };
+    }
+    await tg(env, "sendMessage", { chat_id: req.user_id, parse_mode: "HTML", text: "😕 Платёж не найден. Проверь, что в сообщении к донату был указан твой @username, и нажми «Я оплатил» ещё раз." });
+    return { status: 200, body: { ok: true } };
+  }
+
+  if (path === "/api/admin/submissions" && method === "GET") {
+    const rows = await env.DB.prepare(
+      "SELECT g.item_id AS id, g.author_id, g.created_at, i.category, i.title, i.description, i.link, (i.image != '') AS has_image, u.first_name, u.username FROM fm_ugc g JOIN items i ON i.id = g.item_id LEFT JOIN fm_users u ON u.id = g.author_id WHERE g.status = 'pending' ORDER BY g.created_at"
+    ).all();
+    return { status: 200, body: { pending: rows.results.map((r) => ({ ...r, has_image: !!r.has_image })) } };
+  }
+
+  m = path.match(/^\/api\/admin\/submissions\/(\d+)\/(approve|reject)$/);
+  if (m && method === "POST") {
+    const id = Number(m[1]);
+    const g = await env.DB.prepare("SELECT author_id, title FROM fm_ugc WHERE item_id = ? AND status = 'pending'").bind(id).first();
+    if (!g) return { status: 409, body: { error: "already_handled" } };
+    if (m[2] === "approve") {
+      await env.DB.batch([
+        env.DB.prepare("UPDATE items SET hidden = 0, updated_at = ? WHERE id = ?").bind(now, id),
+        env.DB.prepare("UPDATE fm_ugc SET status = 'approved' WHERE item_id = ?").bind(id),
+      ]);
+      await tg(env, "sendMessage", { chat_id: g.author_id, parse_mode: "HTML", text: `✅ Твой товар «${esc(g.title)}» прошёл модерацию и появился в каталоге.` });
+    } else {
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM items WHERE id = ?").bind(id),
+        env.DB.prepare("UPDATE fm_ugc SET status = 'rejected' WHERE item_id = ?").bind(id),
+      ]);
+      await tg(env, "sendMessage", { chat_id: g.author_id, parse_mode: "HTML", text: `❌ Твой товар «${esc(g.title)}» не прошёл модерацию. Можешь исправить и отправить ещё раз.` });
+    }
+    return { status: 200, body: { ok: true } };
+  }
+  return { status: 404, body: { error: "not_found" } };
 }
 
 // ---------- Проверка данных товара ----------
@@ -880,6 +1021,9 @@ async function ensureSchema(env) {
     ),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS fm_users_referrer ON fm_users (referrer_id)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_purchases (user_id INTEGER NOT NULL, item_id INTEGER NOT NULL, price INTEGER NOT NULL, charged INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, item_id))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_subs (user_id INTEGER PRIMARY KEY, until INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_payreq (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, username TEXT NOT NULL DEFAULT '', first_name TEXT NOT NULL DEFAULT '', days INTEGER NOT NULL, price INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL DEFAULT 0, handled_at INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_ugc (item_id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_blocked (user_id INTEGER PRIMARY KEY)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS fm_broadcasts (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, btn_text TEXT NOT NULL DEFAULT '', btn_url TEXT NOT NULL DEFAULT '', total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'running', created_at INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_attempts (k TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, lock_until INTEGER NOT NULL DEFAULT 0)"),
